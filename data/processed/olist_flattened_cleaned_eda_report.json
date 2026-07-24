@@ -1,0 +1,456 @@
+{
+  "input_shape": [
+    96476,
+    22
+  ],
+  "numeric_columns": [
+    "customer_zip_code_prefix",
+    "n_items",
+    "n_distinct_sellers",
+    "n_distinct_products",
+    "total_price",
+    "total_freight",
+    "avg_product_weight_g",
+    "avg_product_photos_qty",
+    "total_payment_value",
+    "max_installments",
+    "n_payment_methods",
+    "purchase_to_estimated_days",
+    "is_late_delivery"
+  ],
+  "categorical_columns": [
+    "order_id",
+    "order_purchase_timestamp",
+    "order_estimated_delivery_date",
+    "customer_unique_id",
+    "customer_city",
+    "customer_state",
+    "primary_seller_state",
+    "product_category",
+    "primary_payment_type"
+  ],
+  "descriptive_stats": {
+    "customer_zip_code_prefix": {
+      "count": 96476.0,
+      "mean": 35198.96639578755,
+      "std": 29839.60561932374,
+      "min": 1003.0,
+      "25%": 11355.0,
+      "50%": 24436.0,
+      "75%": 59056.0,
+      "max": 99980.0
+    },
+    "n_items": {
+      "count": 96476.0,
+      "mean": 1.1422115344748953,
+      "std": 0.5388157789144618,
+      "min": 1.0,
+      "25%": 1.0,
+      "50%": 1.0,
+      "75%": 1.0,
+      "max": 21.0
+    },
+    "n_distinct_sellers": {
+      "count": 96476.0,
+      "mean": 1.013899830009536,
+      "std": 0.12353774222647612,
+      "min": 1.0,
+      "25%": 1.0,
+      "50%": 1.0,
+      "75%": 1.0,
+      "max": 5.0
+    },
+    "n_distinct_products": {
+      "count": 96476.0,
+      "mean": 1.0385484472822257,
+      "std": 0.22796548987012796,
+      "min": 1.0,
+      "25%": 1.0,
+      "50%": 1.0,
+      "75%": 1.0,
+      "max": 8.0
+    },
+    "total_price": {
+      "count": 96476.0,
+      "mean": 137.03817643766325,
+      "std": 209.04709101222022,
+      "min": 0.85,
+      "25%": 45.9,
+      "50%": 86.5,
+      "75%": 149.9,
+      "max": 13440.0
+    },
+    "total_freight": {
+      "count": 96476.0,
+      "mean": 22.78544197520627,
+      "std": 21.559394167465463,
+      "min": 0.0,
+      "25%": 13.85,
+      "50%": 17.17,
+      "75%": 24.02,
+      "max": 1794.96
+    },
+    "avg_product_weight_g": {
+      "count": 96476.0,
+      "mean": 2097.974921901488,
+      "std": 3744.6500986282763,
+      "min": 0.0,
+      "25%": 300.0,
+      "50%": 700.0,
+      "75%": 1800.0,
+      "max": 40425.0
+    },
+    "avg_product_photos_qty": {
+      "count": 96476.0,
+      "mean": 2.2474508520074257,
+      "std": 1.728547972950439,
+      "min": 1.0,
+      "25%": 1.0,
+      "50%": 2.0,
+      "75%": 3.0,
+      "max": 20.0
+    },
+    "total_payment_value": {
+      "count": 96476.0,
+      "mean": 159.85257172768357,
+      "std": 218.81407157979837,
+      "min": 9.59,
+      "25%": 61.88,
+      "50%": 105.28,
+      "75%": 176.33,
+      "max": 13664.08
+    },
+    "max_installments": {
+      "count": 96476.0,
+      "mean": 2.9280028193540364,
+      "std": 2.7127254894413606,
+      "min": 0.0,
+      "25%": 1.0,
+      "50%": 2.0,
+      "75%": 4.0,
+      "max": 24.0
+    },
+    "n_payment_methods": {
+      "count": 96476.0,
+      "mean": 1.0226170239230483,
+      "std": 0.14867993571343555,
+      "min": 1.0,
+      "25%": 1.0,
+      "50%": 1.0,
+      "75%": 1.0,
+      "max": 2.0
+    },
+    "purchase_to_estimated_days": {
+      "count": 96476.0,
+      "mean": 23.37422778722169,
+      "std": 8.76082997198804,
+      "min": 2.0,
+      "25%": 18.0,
+      "50%": 23.0,
+      "75%": 28.0,
+      "max": 155.0
+    },
+    "is_late_delivery": {
+      "count": 96476.0,
+      "mean": 0.08112898544715784,
+      "std": 0.27303451407502777,
+      "min": 0.0,
+      "25%": 0.0,
+      "50%": 0.0,
+      "75%": 0.0,
+      "max": 1.0
+    }
+  },
+  "correlation_matrix": {
+    "customer_zip_code_prefix": {
+      "customer_zip_code_prefix": 1.0,
+      "n_items": -0.0030692071172318527,
+      "n_distinct_sellers": -0.0012506891424196073,
+      "n_distinct_products": -0.00911766481243878,
+      "total_price": 0.04096805611375126,
+      "total_freight": 0.18717753908584311,
+      "avg_product_weight_g": 0.002094705161698555,
+      "avg_product_photos_qty": 0.01940123457997631,
+      "total_payment_value": 0.057643897715997816,
+      "max_installments": 0.056579214044212914,
+      "n_payment_methods": 0.003373506061523691,
+      "purchase_to_estimated_days": 0.38062898497268416,
+      "is_late_delivery": 0.024187265153184284
+    },
+    "n_items": {
+      "customer_zip_code_prefix": -0.0030692071172318527,
+      "n_items": 1.0,
+      "n_distinct_sellers": 0.285013992882834,
+      "n_distinct_products": 0.4735898495113625,
+      "total_price": 0.1534759928779717,
+      "total_freight": 0.4393881935087602,
+      "avg_product_weight_g": -0.004859067643619106,
+      "avg_product_photos_qty": -0.04850761206836482,
+      "total_payment_value": 0.18997599837319393,
+      "max_installments": 0.0682402451480828,
+      "n_payment_methods": -0.00650891502404485,
+      "purchase_to_estimated_days": 0.01619778318468347,
+      "is_late_delivery": -0.015859260855871513
+    },
+    "n_distinct_sellers": {
+      "customer_zip_code_prefix": -0.0012506891424196073,
+      "n_items": 0.285013992882834,
+      "n_distinct_sellers": 1.0,
+      "n_distinct_products": 0.5948948014718386,
+      "total_price": 0.04254935207376781,
+      "total_freight": 0.13271303989452327,
+      "avg_product_weight_g": -0.006877332987011522,
+      "avg_product_photos_qty": -0.016015764634131957,
+      "total_payment_value": 0.05383500982552895,
+      "max_installments": 0.0627429653152717,
+      "n_payment_methods": 0.007150384110908084,
+      "purchase_to_estimated_days": 0.024375609397218292,
+      "is_late_delivery": -0.02790133652340355
+    },
+    "n_distinct_products": {
+      "customer_zip_code_prefix": -0.00911766481243878,
+      "n_items": 0.4735898495113625,
+      "n_distinct_sellers": 0.5948948014718386,
+      "n_distinct_products": 1.0,
+      "total_price": 0.06317739170921373,
+      "total_freight": 0.19738612278189258,
+      "avg_product_weight_g": -0.016255852798322836,
+      "avg_product_photos_qty": -0.02694715776247922,
+      "total_payment_value": 0.0798704484207356,
+      "max_installments": 0.07377961282505521,
+      "n_payment_methods": 0.0030237155051811475,
+      "purchase_to_estimated_days": 0.023159247630202984,
+      "is_late_delivery": -0.022101953717809465
+    },
+    "total_price": {
+      "customer_zip_code_prefix": 0.04096805611375126,
+      "n_items": 0.1534759928779717,
+      "n_distinct_sellers": 0.04254935207376781,
+      "n_distinct_products": 0.06317739170921373,
+      "total_price": 1.0,
+      "total_freight": 0.41117660127616484,
+      "avg_product_weight_g": 0.3324694693860606,
+      "avg_product_photos_qty": 0.035568966293314686,
+      "total_payment_value": 0.9959351725396185,
+      "max_installments": 0.31431983111826267,
+      "n_payment_methods": -0.007868883886764155,
+      "purchase_to_estimated_days": 0.07655981181860537,
+      "is_late_delivery": 0.01568192675452159
+    },
+    "total_freight": {
+      "customer_zip_code_prefix": 0.18717753908584311,
+      "n_items": 0.4393881935087602,
+      "n_distinct_sellers": 0.13271303989452327,
+      "n_distinct_products": 0.19738612278189258,
+      "total_price": 0.41117660127616484,
+      "total_freight": 1.0,
+      "avg_product_weight_g": 0.5019133570794976,
+      "avg_product_photos_qty": -0.00581091733745826,
+      "total_payment_value": 0.49147305150741144,
+      "max_installments": 0.19925337258849066,
+      "n_payment_methods": -0.001816854185985875,
+      "purchase_to_estimated_days": 0.23969555632770387,
+      "is_late_delivery": 0.025316066718807633
+    },
+    "avg_product_weight_g": {
+      "customer_zip_code_prefix": 0.002094705161698555,
+      "n_items": -0.004859067643619106,
+      "n_distinct_sellers": -0.006877332987011522,
+      "n_distinct_products": -0.016255852798322836,
+      "total_price": 0.3324694693860606,
+      "total_freight": 0.5019133570794976,
+      "avg_product_weight_g": 1.0,
+      "avg_product_photos_qty": 0.029818003705260186,
+      "total_payment_value": 0.3671774287827102,
+      "max_installments": 0.19787476559786785,
+      "n_payment_methods": -0.0010721273431451017,
+      "purchase_to_estimated_days": 0.07517501362013576,
+      "is_late_delivery": 0.023742326479813676
+    },
+    "avg_product_photos_qty": {
+      "customer_zip_code_prefix": 0.01940123457997631,
+      "n_items": -0.04850761206836482,
+      "n_distinct_sellers": -0.016015764634131957,
+      "n_distinct_products": -0.02694715776247922,
+      "total_price": 0.035568966293314686,
+      "total_freight": -0.00581091733745826,
+      "avg_product_weight_g": 0.029818003705260186,
+      "avg_product_photos_qty": 1.0,
+      "total_payment_value": 0.03339139111191289,
+      "max_installments": 0.004639578222156433,
+      "n_payment_methods": 0.003653914603438966,
+      "purchase_to_estimated_days": -0.03338930108563079,
+      "is_late_delivery": -0.0060766197974844805
+    },
+    "total_payment_value": {
+      "customer_zip_code_prefix": 0.057643897715997816,
+      "n_items": 0.18997599837319393,
+      "n_distinct_sellers": 0.05383500982552895,
+      "n_distinct_products": 0.0798704484207356,
+      "total_price": 0.9959351725396185,
+      "total_freight": 0.49147305150741144,
+      "avg_product_weight_g": 0.3671774287827102,
+      "avg_product_photos_qty": 0.03339139111191289,
+      "total_payment_value": 1.0,
+      "max_installments": 0.3202752126458586,
+      "n_payment_methods": -0.007711232154690476,
+      "purchase_to_estimated_days": 0.09684823409352634,
+      "is_late_delivery": 0.017459035125824123
+    },
+    "max_installments": {
+      "customer_zip_code_prefix": 0.056579214044212914,
+      "n_items": 0.0682402451480828,
+      "n_distinct_sellers": 0.0627429653152717,
+      "n_distinct_products": 0.07377961282505521,
+      "total_price": 0.31431983111826267,
+      "total_freight": 0.19925337258849066,
+      "avg_product_weight_g": 0.19787476559786785,
+      "avg_product_photos_qty": 0.004639578222156433,
+      "total_payment_value": 0.3202752126458586,
+      "max_installments": 1.0,
+      "n_payment_methods": -0.04178509614613053,
+      "purchase_to_estimated_days": 0.09364817148154048,
+      "is_late_delivery": 0.008991864886245914
+    },
+    "n_payment_methods": {
+      "customer_zip_code_prefix": 0.003373506061523691,
+      "n_items": -0.00650891502404485,
+      "n_distinct_sellers": 0.007150384110908084,
+      "n_distinct_products": 0.0030237155051811475,
+      "total_price": -0.007868883886764155,
+      "total_freight": -0.001816854185985875,
+      "avg_product_weight_g": -0.0010721273431451017,
+      "avg_product_photos_qty": 0.003653914603438966,
+      "total_payment_value": -0.007711232154690476,
+      "max_installments": -0.04178509614613053,
+      "n_payment_methods": 1.0,
+      "purchase_to_estimated_days": 0.011860435272126522,
+      "is_late_delivery": -0.005878758638935126
+    },
+    "purchase_to_estimated_days": {
+      "customer_zip_code_prefix": 0.38062898497268416,
+      "n_items": 0.01619778318468347,
+      "n_distinct_sellers": 0.024375609397218292,
+      "n_distinct_products": 0.023159247630202984,
+      "total_price": 0.07655981181860537,
+      "total_freight": 0.23969555632770387,
+      "avg_product_weight_g": 0.07517501362013576,
+      "avg_product_photos_qty": -0.03338930108563079,
+      "total_payment_value": 0.09684823409352634,
+      "max_installments": 0.09364817148154048,
+      "n_payment_methods": 0.011860435272126522,
+      "purchase_to_estimated_days": 1.0,
+      "is_late_delivery": -0.05985672715049919
+    },
+    "is_late_delivery": {
+      "customer_zip_code_prefix": 0.024187265153184284,
+      "n_items": -0.015859260855871513,
+      "n_distinct_sellers": -0.02790133652340355,
+      "n_distinct_products": -0.022101953717809465,
+      "total_price": 0.01568192675452159,
+      "total_freight": 0.025316066718807633,
+      "avg_product_weight_g": 0.023742326479813676,
+      "avg_product_photos_qty": -0.0060766197974844805,
+      "total_payment_value": 0.017459035125824123,
+      "max_installments": 0.008991864886245914,
+      "n_payment_methods": -0.005878758638935126,
+      "purchase_to_estimated_days": -0.05985672715049919,
+      "is_late_delivery": 1.0
+    }
+  },
+  "skewness": {
+    "customer_zip_code_prefix": 0.7760061831946579,
+    "n_items": 7.557530809718789,
+    "n_distinct_sellers": 9.87058671461958,
+    "n_distinct_products": 8.070317811219306,
+    "total_price": 9.885592264575484,
+    "total_freight": 12.277149835749347,
+    "avg_product_weight_g": 3.611071365524966,
+    "avg_product_photos_qty": 1.8662011398893337,
+    "total_payment_value": 9.366888883523387,
+    "max_installments": 1.6037399369948078,
+    "n_payment_methods": 6.42175247655757,
+    "purchase_to_estimated_days": 0.9061289840672105,
+    "is_late_delivery": 3.0683278235066758
+  },
+  "outlier_summary": {
+    "customer_zip_code_prefix": {
+      "n_outliers": 0,
+      "pct_outliers": 0.0,
+      "lower_fence": -60196.5,
+      "upper_fence": 130607.5
+    },
+    "n_items": {
+      "n_outliers": 9636,
+      "pct_outliers": 9.988,
+      "lower_fence": 1.0,
+      "upper_fence": 1.0
+    },
+    "n_distinct_sellers": {
+      "n_outliers": 1275,
+      "pct_outliers": 1.3216,
+      "lower_fence": 1.0,
+      "upper_fence": 1.0
+    },
+    "n_distinct_products": {
+      "n_outliers": 3198,
+      "pct_outliers": 3.3148,
+      "lower_fence": 1.0,
+      "upper_fence": 1.0
+    },
+    "total_price": {
+      "n_outliers": 7658,
+      "pct_outliers": 7.9377,
+      "lower_fence": -110.1,
+      "upper_fence": 305.9
+    },
+    "total_freight": {
+      "n_outliers": 9694,
+      "pct_outliers": 10.0481,
+      "lower_fence": -1.4049999999999994,
+      "upper_fence": 39.275
+    },
+    "avg_product_weight_g": {
+      "n_outliers": 13738,
+      "pct_outliers": 14.2398,
+      "lower_fence": -1950.0,
+      "upper_fence": 4050.0
+    },
+    "avg_product_photos_qty": {
+      "n_outliers": 2777,
+      "pct_outliers": 2.8784,
+      "lower_fence": -2.0,
+      "upper_fence": 6.0
+    },
+    "total_payment_value": {
+      "n_outliers": 7575,
+      "pct_outliers": 7.8517,
+      "lower_fence": -109.79500000000002,
+      "upper_fence": 348.005
+    },
+    "max_installments": {
+      "n_outliers": 6084,
+      "pct_outliers": 6.3062,
+      "lower_fence": -3.5,
+      "upper_fence": 8.5
+    },
+    "n_payment_methods": {
+      "n_outliers": 2182,
+      "pct_outliers": 2.2617,
+      "lower_fence": 1.0,
+      "upper_fence": 1.0
+    },
+    "purchase_to_estimated_days": {
+      "n_outliers": 2322,
+      "pct_outliers": 2.4068,
+      "lower_fence": 3.0,
+      "upper_fence": 43.0
+    },
+    "is_late_delivery": {
+      "n_outliers": 7827,
+      "pct_outliers": 8.1129,
+      "lower_fence": 0.0,
+      "upper_fence": 0.0
+    }
+  }
+}
