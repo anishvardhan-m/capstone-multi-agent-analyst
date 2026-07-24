@@ -1,0 +1,35 @@
+{
+  "charts": [
+    {
+      "name": "distributions",
+      "path": "workspace/visualizations/01_distributions.png",
+      "description": "Histogram + KDE for ['purchase_to_estimated_days', 'customer_zip_code_prefix', 'n_distinct_products', 'n_items', 'avg_product_weight_g']"
+    },
+    {
+      "name": "correlation_heatmap",
+      "path": "workspace/visualizations/02_correlation_heatmap.png",
+      "description": "Pearson correlation matrix, annotated"
+    },
+    {
+      "name": "feature_importance",
+      "path": "workspace/visualizations/03_feature_importance.png",
+      "description": "Top 10 features by permutation importance"
+    },
+    {
+      "name": "confusion_matrix",
+      "path": "workspace/visualizations/04_confusion_matrix.png",
+      "description": "Confusion matrix at default threshold 0.5"
+    },
+    {
+      "name": "threshold_tradeoff",
+      "path": "workspace/visualizations/05_threshold_tradeoff.png",
+      "description": "Minority-class precision and recall across decision thresholds"
+    },
+    {
+      "name": "top_feature_vs_target",
+      "path": "workspace/visualizations/06_top_feature_vs_target.png",
+      "description": "Box plot of 'purchase_to_estimated_days' split by is_late_delivery"
+    }
+  ],
+  "skipped": []
+}
