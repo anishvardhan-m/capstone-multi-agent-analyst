@@ -1,0 +1,98 @@
+{
+  "input_shape": [
+    96476,
+    22
+  ],
+  "output_shape": [
+    96476,
+    24
+  ],
+  "protected_columns": [
+    "is_late_delivery",
+    "order_id"
+  ],
+  "redundant_columns_dropped": [
+    "total_payment_value"
+  ],
+  "log_transformed_columns": [
+    "n_items",
+    "n_distinct_sellers",
+    "n_distinct_products",
+    "total_price",
+    "total_freight",
+    "avg_product_weight_g",
+    "avg_product_photos_qty",
+    "max_installments",
+    "n_payment_methods"
+  ],
+  "scaled_columns": [
+    "customer_zip_code_prefix",
+    "n_items",
+    "n_distinct_sellers",
+    "n_distinct_products",
+    "total_price",
+    "total_freight",
+    "avg_product_weight_g",
+    "avg_product_photos_qty",
+    "max_installments",
+    "n_payment_methods",
+    "purchase_to_estimated_days"
+  ],
+  "zero_variance_columns_skipped": [],
+  "encoding_map": {
+    "order_purchase_timestamp": "frequency",
+    "order_estimated_delivery_date": "frequency",
+    "customer_unique_id": "frequency",
+    "customer_city": "frequency",
+    "customer_state": "frequency",
+    "primary_seller_state": "frequency",
+    "product_category": "frequency",
+    "primary_payment_type": "one_hot"
+  },
+  "scaler_stats": {
+    "customer_zip_code_prefix": {
+      "mean": 35198.96639578755,
+      "std": 29839.60561932374
+    },
+    "n_items": {
+      "mean": 0.7439627850672249,
+      "std": 0.16732854919595525
+    },
+    "n_distinct_sellers": {
+      "mean": 0.6986969713471123,
+      "std": 0.04859449001613974
+    },
+    "n_distinct_products": {
+      "mean": 0.708028735531715,
+      "std": 0.08364112767696319
+    },
+    "total_price": {
+      "mean": 4.458514810392514,
+      "std": 0.9164628963333721
+    },
+    "total_freight": {
+      "mean": 2.9868525812140345,
+      "std": 0.5561124768172753
+    },
+    "avg_product_weight_g": {
+      "mean": 6.695428800486421,
+      "std": 1.3288075623467157
+    },
+    "avg_product_photos_qty": {
+      "mean": 1.0698761186593382,
+      "std": 0.4387608381097005
+    },
+    "max_installments": {
+      "mean": 1.183422381730322,
+      "std": 0.5734090559649504
+    },
+    "n_payment_methods": {
+      "mean": 0.7023175946099889,
+      "std": 0.06028452620756309
+    },
+    "purchase_to_estimated_days": {
+      "mean": 23.37422778722169,
+      "std": 8.76082997198804
+    }
+  }
+}
