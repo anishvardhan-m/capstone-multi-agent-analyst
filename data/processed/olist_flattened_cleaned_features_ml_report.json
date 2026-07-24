@@ -1,0 +1,92 @@
+{
+  "task_type": "binary_classification",
+  "best_model_name": "HistGradientBoostingClassifier",
+  "cv_scores": {
+    "LogisticRegression": 0.487518,
+    "RandomForestClassifier": 0.500802,
+    "HistGradientBoostingClassifier": 0.5721
+  },
+  "test_metrics": {
+    "f1_macro": 0.56731,
+    "precision_macro": 0.574267,
+    "recall_macro": 0.70167,
+    "roc_auc": 0.769292
+  },
+  "confusion_matrix": [
+    [
+      13315,
+      4416
+    ],
+    [
+      544,
+      1021
+    ]
+  ],
+  "threshold_metrics": [
+    {
+      "threshold": 0.3,
+      "f1_macro": 0.378521,
+      "precision_minority": 0.11436,
+      "recall_minority": 0.897125,
+      "confusion_matrix": [
+        [
+          6858,
+          10873
+        ],
+        [
+          161,
+          1404
+        ]
+      ]
+    },
+    {
+      "threshold": 0.4,
+      "f1_macro": 0.494104,
+      "precision_minority": 0.148573,
+      "recall_minority": 0.801917,
+      "confusion_matrix": [
+        [
+          10539,
+          7192
+        ],
+        [
+          310,
+          1255
+        ]
+      ]
+    },
+    {
+      "threshold": 0.5,
+      "f1_macro": 0.56731,
+      "precision_minority": 0.187787,
+      "recall_minority": 0.652396,
+      "confusion_matrix": [
+        [
+          13315,
+          4416
+        ],
+        [
+          544,
+          1021
+        ]
+      ]
+    }
+  ],
+  "feature_importances": {
+    "customer_state": 0.0476,
+    "order_estimated_delivery_date": 0.0292,
+    "purchase_to_estimated_days": 0.0212,
+    "customer_zip_code_prefix": 0.0126,
+    "customer_city": 0.0051,
+    "customer_unique_id": 0.0004,
+    "n_distinct_products": 0.0,
+    "order_purchase_timestamp": 0.0,
+    "n_payment_methods": 0.0,
+    "primary_seller_state": -0.0002,
+    "primary_payment_type_voucher": -0.0003,
+    "primary_payment_type_debit_card": -0.0004,
+    "n_items": -0.001,
+    "primary_payment_type_credit_card": -0.0015,
+    "n_distinct_sellers": -0.0016
+  }
+}
