@@ -1,0 +1,36 @@
+# Environment / secrets
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Data (raw data can be large; keep repo lean, document how to regenerate)
+data/raw/*.csv
+data/processed/*.csv
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Models (large binaries)
+models/*.pkl
+!models/.gitkeep
+
+# Workspace runtime artifacts
+workspace/visualizations/*.png
+workspace/metadata/*.db
+!workspace/visualizations/.gitkeep
+!workspace/metadata/.gitkeep
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Logs
+*.log
+RAW_DATASETS/
