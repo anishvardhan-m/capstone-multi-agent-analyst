@@ -1,0 +1,43 @@
+{
+  "input_shape": [
+    96476,
+    23
+  ],
+  "output_shape": [
+    96476,
+    22
+  ],
+  "n_duplicates_removed": 0,
+  "high_missing_columns_flagged": [],
+  "low_variance_columns_dropped": [
+    "order_status"
+  ],
+  "columns_type_corrected": [],
+  "numeric_columns_imputed": [
+    "customer_zip_code_prefix",
+    "n_items",
+    "n_distinct_sellers",
+    "n_distinct_products",
+    "total_price",
+    "total_freight",
+    "avg_product_weight_g",
+    "avg_product_photos_qty",
+    "total_payment_value",
+    "max_installments",
+    "n_payment_methods",
+    "purchase_to_estimated_days",
+    "is_late_delivery"
+  ],
+  "categorical_columns_imputed": [
+    "order_id",
+    "order_status",
+    "order_purchase_timestamp",
+    "order_estimated_delivery_date",
+    "customer_unique_id",
+    "customer_city",
+    "customer_state",
+    "primary_seller_state",
+    "product_category",
+    "primary_payment_type"
+  ]
+}
