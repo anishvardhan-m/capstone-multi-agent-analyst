@@ -15,6 +15,7 @@ import json
 import os
 import sys
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
@@ -40,6 +41,31 @@ def output_dir(tmp_path):
 @pytest.fixture
 def agent():
     return VisualizationAgent(top_dist_features=3, top_importance_features=5)
+
+
+def test_constructor_defaults_are_generic_not_olist_specific():
+    agent = VisualizationAgent()
+    assert agent.positive_label == "Positive"
+    assert agent.negative_label == "Negative"
+    assert agent.unit_label == "record"
+
+
+def test_constructor_accepts_custom_labels():
+    agent = VisualizationAgent(positive_label="Late", negative_label="On-time", unit_label="order")
+    assert agent.positive_label == "Late"
+    assert agent.negative_label == "On-time"
+    assert agent.unit_label == "order"
+
+
+@pytest.fixture
+def keep_figure_open(monkeypatch):
+    """Prevent a chart method's internal plt.close(fig) from discarding
+    the figure, so the test can inspect tick labels/titles/legend text via
+    plt.gcf() immediately afterward. Real cleanup happens in the fixture's
+    teardown instead."""
+    monkeypatch.setattr(plt, "close", lambda *args, **kwargs: None)
+    yield
+    plt.close("all")
 
 
 @pytest.fixture
@@ -86,6 +112,33 @@ def sample_threshold_metrics():
         {"threshold": 0.4, "f1_macro": 0.50, "precision_minority": 0.16, "recall_minority": 0.80, "confusion_matrix": [[130, 40], [9, 41]]},
         {"threshold": 0.5, "f1_macro": 0.57, "precision_minority": 0.20, "recall_minority": 0.65, "confusion_matrix": [[155, 15], [18, 32]]},
     ]
+
+
+@pytest.fixture
+def sample_test_predictions():
+    """Synthetic regression actual/predicted pairs (handbook Section 8.2 genericity)."""
+    rng = np.random.default_rng(2)
+    actual = rng.uniform(50, 500, 150).tolist()
+    predicted = [a + n for a, n in zip(actual, rng.standard_normal(150) * 20)]
+    return {"actual": actual, "predicted": predicted}
+
+
+@pytest.fixture
+def regression_df():
+    """Small numeric DataFrame with a continuous target."""
+    rng = np.random.default_rng(3)
+    square_footage = rng.uniform(800, 4000, 200)
+    price = square_footage * 150 + rng.standard_normal(200) * 20000 + 50000
+    return pd.DataFrame({
+        "square_footage": square_footage,
+        "num_bedrooms": rng.integers(1, 6, 200),
+        "price": price,
+    })
+
+
+@pytest.fixture
+def regression_feature_importances():
+    return {"square_footage": 0.42, "num_bedrooms": 0.05}
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +249,42 @@ def test_confusion_matrix_skips_on_empty_list(agent, output_dir):
     assert len(report.charts) == 0
 
 
+def test_confusion_matrix_uses_generic_defaults_when_no_labels_given(
+    agent, sample_confusion_matrix, output_dir, keep_figure_open
+):
+    """VisualizationAgent() with no labels must still produce a coherent
+    chart -- generic 'Positive'/'Negative' ticks, not a crash or a leaked
+    Olist-specific default."""
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_confusion_matrix(sample_confusion_matrix, output_dir, report)
+
+    ax = plt.gcf().axes[0]
+    tick_texts = [t.get_text() for t in ax.get_xticklabels()]
+    assert "Positive (1)" in tick_texts
+    assert "Negative (0)" in tick_texts
+    assert "Late (1)" not in tick_texts
+
+
+def test_confusion_matrix_uses_custom_labels_when_provided(
+    sample_confusion_matrix, output_dir, keep_figure_open
+):
+    """Regression test: a genericity fix previously replaced this
+    project's approved 'On-time'/'Late' confusion-matrix labels with
+    generic 'Negative'/'Positive' unconditionally. Custom labels passed to
+    the constructor must now appear in the actual chart ticks."""
+    os.makedirs(output_dir, exist_ok=True)
+    custom_agent = VisualizationAgent(positive_label="Late", negative_label="On-time")
+    report = VisualizationReport()
+    custom_agent._chart_confusion_matrix(sample_confusion_matrix, output_dir, report)
+
+    ax = plt.gcf().axes[0]
+    tick_texts = [t.get_text() for t in ax.get_xticklabels()]
+    assert "Late (1)" in tick_texts
+    assert "On-time (0)" in tick_texts
+    assert "Positive (1)" not in tick_texts
+
+
 # ---------------------------------------------------------------------------
 # Chart 5 — Threshold tradeoff
 # ---------------------------------------------------------------------------
@@ -208,6 +297,35 @@ def test_threshold_tradeoff_creates_nonempty_png(agent, sample_threshold_metrics
     assert os.path.getsize(report.charts[0]["path"]) > _MIN_FILE_BYTES
 
 
+def test_threshold_tradeoff_uses_generic_default_positive_label(
+    agent, sample_threshold_metrics, output_dir, keep_figure_open
+):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_threshold_tradeoff(sample_threshold_metrics, output_dir, report)
+
+    ax = plt.gcf().axes[0]
+    legend_texts = [t.get_text() for t in ax.get_legend().get_texts()]
+    assert "Positive Recall" in legend_texts
+    assert "Positive Precision" in legend_texts
+    assert "Positive" in ax.get_title()
+
+
+def test_threshold_tradeoff_uses_custom_positive_label_when_provided(
+    sample_threshold_metrics, output_dir, keep_figure_open
+):
+    os.makedirs(output_dir, exist_ok=True)
+    custom_agent = VisualizationAgent(positive_label="Late")
+    report = VisualizationReport()
+    custom_agent._chart_threshold_tradeoff(sample_threshold_metrics, output_dir, report)
+
+    ax = plt.gcf().axes[0]
+    legend_texts = [t.get_text() for t in ax.get_legend().get_texts()]
+    assert "Late Recall" in legend_texts
+    assert "Late Precision" in legend_texts
+    assert "Late" in ax.get_title()
+
+
 def test_threshold_tradeoff_skips_on_none(agent, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     report = VisualizationReport()
@@ -217,7 +335,63 @@ def test_threshold_tradeoff_skips_on_none(agent, output_dir):
 
 
 # ---------------------------------------------------------------------------
-# Chart 6 — Top feature vs. target box plot
+# Chart 4 (regression variant) — Actual vs. predicted scatter
+# (handbook Section 8.2 genericity: classification/regression parity)
+# ---------------------------------------------------------------------------
+
+def test_actual_vs_predicted_creates_nonempty_png(agent, sample_test_predictions, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_actual_vs_predicted(sample_test_predictions, output_dir, report)
+    assert len(report.charts) == 1
+    assert os.path.getsize(report.charts[0]["path"]) > _MIN_FILE_BYTES
+
+
+def test_actual_vs_predicted_skips_on_none(agent, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_actual_vs_predicted(None, output_dir, report)
+    assert len(report.charts) == 0
+    assert report.skipped[0]["name"] == "actual_vs_predicted"
+
+
+def test_actual_vs_predicted_skips_on_empty_lists(agent, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_actual_vs_predicted({"actual": [], "predicted": []}, output_dir, report)
+    assert len(report.charts) == 0
+
+
+# ---------------------------------------------------------------------------
+# Chart 5 (regression variant) — Residual plot
+# ---------------------------------------------------------------------------
+
+def test_residuals_creates_nonempty_png(agent, sample_test_predictions, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_residuals(sample_test_predictions, output_dir, report)
+    assert len(report.charts) == 1
+    assert os.path.getsize(report.charts[0]["path"]) > _MIN_FILE_BYTES
+
+
+def test_residuals_skips_on_none(agent, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_residuals(None, output_dir, report)
+    assert len(report.charts) == 0
+    assert report.skipped[0]["name"] == "residuals"
+
+
+def test_residuals_skips_on_empty_lists(agent, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_residuals({"actual": [], "predicted": []}, output_dir, report)
+    assert len(report.charts) == 0
+
+
+# ---------------------------------------------------------------------------
+# Chart 6 — Top feature vs. target: box plot (classification) vs.
+# scatter (regression), selected by task_type
 # ---------------------------------------------------------------------------
 
 def test_top_feature_vs_target_creates_nonempty_png(
@@ -249,6 +423,70 @@ def test_top_feature_vs_target_skips_when_target_missing(
         simple_df, "nonexistent_col", sample_feature_importances, output_dir, report
     )
     assert len(report.charts) == 0
+
+
+def test_top_feature_vs_target_uses_boxplot_for_classification(
+    agent, simple_df, sample_feature_importances, output_dir
+):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_top_feature_vs_target(
+        simple_df, "is_late_delivery", sample_feature_importances, output_dir, report,
+        task_type="binary_classification",
+    )
+    assert len(report.charts) == 1
+    assert "Box plot" in report.charts[0]["description"]
+
+
+def test_top_feature_vs_target_uses_scatter_for_regression(
+    agent, regression_df, regression_feature_importances, output_dir
+):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_top_feature_vs_target(
+        regression_df, "price", regression_feature_importances, output_dir, report,
+        task_type="regression",
+    )
+    assert len(report.charts) == 1
+    assert os.path.getsize(report.charts[0]["path"]) > _MIN_FILE_BYTES
+    assert "Scatter plot" in report.charts[0]["description"]
+
+
+def test_top_feature_vs_target_boxplot_uses_generic_default_labels(
+    agent, simple_df, sample_feature_importances, output_dir, keep_figure_open
+):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_top_feature_vs_target(
+        simple_df, "is_late_delivery", sample_feature_importances, output_dir, report,
+        task_type="binary_classification",
+    )
+    ax = plt.gcf().axes[0]
+    tick_texts = [t.get_text() for t in ax.get_xticklabels()]
+    assert "Positive (1)" in tick_texts
+    assert "Negative (0)" in tick_texts
+    assert "Record" in ax.get_xlabel()
+
+
+def test_top_feature_vs_target_boxplot_uses_custom_labels_when_provided(
+    simple_df, sample_feature_importances, output_dir, keep_figure_open
+):
+    """Regression test: custom labels must reach the box plot's tick
+    labels and axis text too, not just the confusion matrix."""
+    os.makedirs(output_dir, exist_ok=True)
+    custom_agent = VisualizationAgent(
+        positive_label="Late", negative_label="On-time", unit_label="order",
+    )
+    report = VisualizationReport()
+    custom_agent._chart_top_feature_vs_target(
+        simple_df, "is_late_delivery", sample_feature_importances, output_dir, report,
+        task_type="binary_classification",
+    )
+    ax = plt.gcf().axes[0]
+    tick_texts = [t.get_text() for t in ax.get_xticklabels()]
+    assert "Late (1)" in tick_texts
+    assert "On-time (0)" in tick_texts
+    assert "Order" in ax.get_xlabel()
 
 
 # ---------------------------------------------------------------------------
@@ -376,3 +614,112 @@ def test_agent_run_no_crash_with_missing_ml_report(agent, e2e_eda_report, e2e_cs
         e2e_eda_report, "nonexistent_ml_report.json", e2e_csv, output_dir=out
     )
     assert success is True  # graceful degradation, not a crash
+
+
+# ---------------------------------------------------------------------------
+# VisualizationAgent.run — end-to-end, REGRESSION branch
+# (handbook Section 8.2 genericity: classification/regression parity)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def e2e_regression_csv(tmp_path):
+    rng = np.random.default_rng(11)
+    n = 300
+    square_footage = rng.uniform(800, 4000, n)
+    price = square_footage * 150 + rng.standard_normal(n) * 20000 + 50000
+    df = pd.DataFrame({
+        "square_footage": square_footage,
+        "num_bedrooms": rng.integers(1, 6, n),
+        "lot_size": rng.uniform(0.1, 2.0, n),
+        "neighborhood": rng.choice(["A", "B", "C"], n),
+        "price": price,
+    })
+    p = tmp_path / "reg_data.csv"
+    df.to_csv(p, index=False)
+    return str(p)
+
+
+@pytest.fixture
+def e2e_regression_eda_report(tmp_path, e2e_regression_csv):
+    df = pd.read_csv(e2e_regression_csv)
+    numeric = df.select_dtypes(include=[np.number]).columns.tolist()
+    corr = df[numeric].corr().to_dict()
+    report = {
+        "input_shape": list(df.shape),
+        "numeric_columns": numeric,
+        "categorical_columns": ["neighborhood"],
+        "descriptive_stats": {},
+        "correlation_matrix": corr,
+        "skewness": {},
+        "outlier_summary": {},
+    }
+    p = tmp_path / "reg_eda_report.json"
+    p.write_text(json.dumps(report))
+    return str(p)
+
+
+@pytest.fixture
+def e2e_regression_ml_report(tmp_path, sample_test_predictions):
+    report = {
+        "task_type": "regression",
+        "best_model_name": "RandomForestRegressor",
+        "cv_scores": {"RandomForestRegressor": -18000.0},
+        "best_hyperparameters": {"n_estimators": 200},
+        "test_metrics": {"rmse": 18500.2, "mae": 14200.5, "r2": 0.81, "adjusted_r2": 0.80},
+        "confusion_matrix": None,
+        "threshold_metrics": None,
+        "feature_importances": {"square_footage": 0.42, "num_bedrooms": 0.05, "lot_size": 0.02},
+        "test_predictions": sample_test_predictions,
+    }
+    p = tmp_path / "reg_ml_report.json"
+    p.write_text(json.dumps(report))
+    return str(p)
+
+
+def test_agent_run_regression_generates_regression_charts_not_classification(
+    agent, e2e_regression_eda_report, e2e_regression_ml_report, e2e_regression_csv, tmp_path
+):
+    """The core genericity proof: a regression ML report must steer
+    VisualizationAgent.run() into the actual-vs-predicted/residual/scatter
+    charts and away from confusion-matrix/threshold-tradeoff/box-plot --
+    the classification-only charts."""
+    out = str(tmp_path / "viz_reg")
+    success, _ = agent.run(
+        e2e_regression_eda_report, e2e_regression_ml_report, e2e_regression_csv,
+        target_col="price", output_dir=out,
+    )
+    assert success is True
+
+    chart_names = {c["name"] for c in agent.report_.charts}
+    assert chart_names == {
+        "distributions", "correlation_heatmap", "feature_importance",
+        "actual_vs_predicted", "residuals", "top_feature_vs_target",
+    }
+    assert "confusion_matrix" not in chart_names
+    assert "threshold_tradeoff" not in chart_names
+
+    top_feature_chart = next(
+        c for c in agent.report_.charts if c["name"] == "top_feature_vs_target"
+    )
+    assert "Scatter plot" in top_feature_chart["description"]
+
+    for chart in agent.report_.charts:
+        assert os.path.getsize(chart["path"]) > _MIN_FILE_BYTES, (
+            f"{chart['name']} PNG is suspiciously small"
+        )
+
+
+def test_agent_run_regression_writes_valid_report_json(
+    agent, e2e_regression_eda_report, e2e_regression_ml_report, e2e_regression_csv, tmp_path
+):
+    out = str(tmp_path / "viz_reg_json")
+    _, report_path = agent.run(
+        e2e_regression_eda_report, e2e_regression_ml_report, e2e_regression_csv,
+        target_col="price", output_dir=out,
+    )
+    with open(report_path) as f:
+        data = json.load(f)
+    assert len(data["charts"]) == 6
+    names = {c["name"] for c in data["charts"]}
+    assert "actual_vs_predicted" in names
+    assert "residuals" in names

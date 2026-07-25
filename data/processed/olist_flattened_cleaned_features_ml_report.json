@@ -92,5 +92,6 @@
     "n_items": -0.001,
     "primary_payment_type_credit_card": -0.0015,
     "n_distinct_sellers": -0.0016
-  }
+  },
+  "test_predictions": null
 }

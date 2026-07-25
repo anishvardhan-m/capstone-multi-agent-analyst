@@ -14,6 +14,26 @@ missing/incomplete upstream reports gracefully: if a required piece of data
 is absent (e.g. empty feature_importances) the relevant chart is skipped
 and logged as a warning rather than crashing.
 
+Genericity (handbook Section 8.2): this agent must work for classification
+AND regression, on any dataset. It branches on ml_report["task_type"]:
+  * classification (binary/multiclass): confusion-matrix heatmap +
+    decision-threshold tradeoff line chart, and a box plot of the top
+    feature split by class.
+  * regression: actual-vs-predicted scatter (diagonal = perfect
+    prediction) + residual plot (predicted vs. actual-minus-predicted,
+    zero line), and a scatter of the top feature against the continuous
+    target. These read MLReport's "test_predictions" field -- the exact
+    held-out (actual, predicted) pairs MLAgent used to compute RMSE/MAE,
+    so the charts are guaranteed consistent with the reported metrics
+    rather than reconstructed independently.
+
+Binary classification chart labels (confusion matrix ticks, threshold
+legend, top-feature-vs-target box plot ticks) also come from constructor
+parameters -- positive_label/negative_label/unit_label -- rather than a
+hardcoded domain. Defaults are generic ("Positive"/"Negative"/"record");
+callers with a real domain (e.g. this project's Olist model in __main__
+below) pass their own labels instead.
+
 Styling contract (capstone handbook Section 11.2)
 -------------------------------------------------
   * Style     : seaborn-v0_8-whitegrid
@@ -101,15 +121,31 @@ class VisualizationAgent:
         selected by descending variance.
     top_importance_features : int
         Number of features to show in the feature importance bar chart.
+    positive_label, negative_label : str
+        What class 1 / class 0 are called in this business domain, used
+        for binary classification chart labels (confusion matrix ticks,
+        threshold-tradeoff legend, top-feature-vs-target box plot ticks).
+        Defaults to generic "Positive" / "Negative" -- callers with a real
+        domain (e.g. this project's Olist model) should pass their own
+        labels rather than relying on these defaults.
+    unit_label : str
+        What one row is called in this business domain (e.g. "order",
+        "house"). Defaults to generic "record".
     """
 
     def __init__(
         self,
         top_dist_features: int = 5,
         top_importance_features: int = 10,
+        positive_label: str = "Positive",
+        negative_label: str = "Negative",
+        unit_label: str = "record",
     ):
         self.top_dist_features = top_dist_features
         self.top_importance_features = top_importance_features
+        self.positive_label = positive_label
+        self.negative_label = negative_label
+        self.unit_label = unit_label
         self.report_: Optional[VisualizationReport] = None
 
     # ------------------------------------------------------------------
@@ -312,6 +348,7 @@ class VisualizationAgent:
         cm = np.array(confusion_matrix)
         n_classes = cm.shape[0]
         labels = [str(i) for i in range(n_classes)]
+        binary_labels = [f"{self.negative_label} (0)", f"{self.positive_label} (1)"]
 
         with plt.style.context(_STYLE):
             fig, ax = plt.subplots(figsize=(7, 6))
@@ -322,8 +359,8 @@ class VisualizationAgent:
                 fmt="d",
                 annot_kws={"size": 14, "weight": "bold"},
                 cmap="Blues",
-                xticklabels=["On-time (0)", "Late (1)"] if n_classes == 2 else labels,
-                yticklabels=["On-time (0)", "Late (1)"] if n_classes == 2 else labels,
+                xticklabels=binary_labels if n_classes == 2 else labels,
+                yticklabels=binary_labels if n_classes == 2 else labels,
                 linewidths=0.5,
                 cbar_kws={"label": "Count"},
             )
@@ -367,9 +404,9 @@ class VisualizationAgent:
         with plt.style.context(_STYLE):
             fig, ax = plt.subplots(figsize=_FIG_SIZE)
             ax.plot(thresholds, recall, marker="o", linewidth=2,
-                    color=_PRIMARY, label="Minority Recall (late detected)")
+                    color=_PRIMARY, label=f"{self.positive_label} Recall")
             ax.plot(thresholds, precision, marker="s", linewidth=2,
-                    color=_RED, label="Minority Precision")
+                    color=_RED, label=f"{self.positive_label} Precision")
             ax.plot(thresholds, f1, marker="^", linewidth=2,
                     linestyle="--", color=_ACCENT, label="F1-macro")
 
@@ -383,7 +420,7 @@ class VisualizationAgent:
             ax.set_ylabel("Score", fontsize=_LABEL_SIZE)
             ax.set_title(
                 "Precision / Recall Tradeoff Across Decision Thresholds\n"
-                "(minority class = late delivery)",
+                f"(minority class = {self.positive_label})",
                 fontsize=_TITLE_SIZE, pad=10,
             )
             ax.set_xticks(thresholds)
@@ -401,7 +438,121 @@ class VisualizationAgent:
         logger.info("Saved threshold tradeoff chart → %s", path)
 
     # ------------------------------------------------------------------
-    # Chart 6 — Box plot: top feature vs. target
+    # Chart 4 (regression variant) — Actual vs. predicted scatter
+    # ------------------------------------------------------------------
+
+    def _chart_actual_vs_predicted(
+        self,
+        test_predictions: Optional[dict],
+        output_dir: str,
+        report: VisualizationReport,
+    ) -> None:
+        """Regression counterpart to the confusion-matrix heatmap.
+
+        Plots the model's held-out predictions against the true values,
+        with a diagonal reference line marking perfect prediction. Points
+        hugging the diagonal indicate accurate predictions; systematic
+        deviation above/below it indicates over-/under-prediction.
+        """
+        if not test_predictions or not test_predictions.get("actual") or not test_predictions.get("predicted"):
+            report.skip(
+                "actual_vs_predicted",
+                "ML report has no test_predictions (classification task or absent)",
+            )
+            return
+
+        actual = np.array(test_predictions["actual"])
+        predicted = np.array(test_predictions["predicted"])
+
+        with plt.style.context(_STYLE):
+            fig, ax = plt.subplots(figsize=_FIG_SIZE)
+            ax.scatter(
+                actual, predicted, color=_PRIMARY, alpha=0.4,
+                edgecolor="white", linewidth=0.3, s=20,
+            )
+
+            lo = float(min(actual.min(), predicted.min()))
+            hi = float(max(actual.max(), predicted.max()))
+            ax.plot(
+                [lo, hi], [lo, hi], color=_RED, linewidth=2,
+                linestyle="--", label="Perfect prediction",
+            )
+
+            ax.set_xlabel("Actual value", fontsize=_LABEL_SIZE)
+            ax.set_ylabel("Predicted value", fontsize=_LABEL_SIZE)
+            ax.set_title(
+                "Actual vs. Predicted (held-out test set)",
+                fontsize=_TITLE_SIZE, pad=10,
+            )
+            ax.legend(fontsize=_LABEL_SIZE - 1)
+            fig.tight_layout()
+            path = os.path.join(output_dir, "04_actual_vs_predicted.png")
+            fig.savefig(path, dpi=_DPI, bbox_inches="tight")
+            plt.close(fig)
+
+        report.add(
+            "actual_vs_predicted", path,
+            "Predicted vs. actual values on the held-out test set",
+        )
+        logger.info("Saved actual-vs-predicted chart → %s", path)
+
+    # ------------------------------------------------------------------
+    # Chart 5 (regression variant) — Residual plot
+    # ------------------------------------------------------------------
+
+    def _chart_residuals(
+        self,
+        test_predictions: Optional[dict],
+        output_dir: str,
+        report: VisualizationReport,
+    ) -> None:
+        """Regression counterpart to the threshold-tradeoff chart.
+
+        Plots residuals (actual - predicted) against the predicted value,
+        with a horizontal zero-error line. A random scatter around zero
+        indicates a well-specified model; a visible pattern (funnel,
+        curve, trend) indicates the model is systematically wrong in some
+        region of the prediction range.
+        """
+        if not test_predictions or not test_predictions.get("actual") or not test_predictions.get("predicted"):
+            report.skip(
+                "residuals",
+                "ML report has no test_predictions (classification task or absent)",
+            )
+            return
+
+        actual = np.array(test_predictions["actual"])
+        predicted = np.array(test_predictions["predicted"])
+        residuals = actual - predicted
+
+        with plt.style.context(_STYLE):
+            fig, ax = plt.subplots(figsize=_FIG_SIZE)
+            ax.scatter(
+                predicted, residuals, color=_PRIMARY, alpha=0.4,
+                edgecolor="white", linewidth=0.3, s=20,
+            )
+            ax.axhline(0, color=_RED, linewidth=2, linestyle="--", label="Zero error")
+
+            ax.set_xlabel("Predicted value", fontsize=_LABEL_SIZE)
+            ax.set_ylabel("Residual (actual - predicted)", fontsize=_LABEL_SIZE)
+            ax.set_title(
+                "Residual Plot (held-out test set)", fontsize=_TITLE_SIZE, pad=10
+            )
+            ax.legend(fontsize=_LABEL_SIZE - 1)
+            fig.tight_layout()
+            path = os.path.join(output_dir, "05_residuals.png")
+            fig.savefig(path, dpi=_DPI, bbox_inches="tight")
+            plt.close(fig)
+
+        report.add(
+            "residuals", path,
+            "Residuals (actual - predicted) vs. predicted value",
+        )
+        logger.info("Saved residuals chart → %s", path)
+
+    # ------------------------------------------------------------------
+    # Chart 6 — Top feature vs. target (box plot for classification,
+    # scatter for regression)
     # ------------------------------------------------------------------
 
     def _chart_top_feature_vs_target(
@@ -411,6 +562,7 @@ class VisualizationAgent:
         feature_importances: dict,
         output_dir: str,
         report: VisualizationReport,
+        task_type: str = "binary_classification",
     ) -> None:
         if not feature_importances:
             report.skip(
@@ -441,21 +593,43 @@ class VisualizationAgent:
             )
             return
 
+        if task_type == "regression":
+            self._render_top_feature_vs_target_scatter(df, target_col, top_feature, output_dir, report)
+        else:
+            self._render_top_feature_vs_target_boxplot(df, target_col, top_feature, output_dir, report)
+
+    def _render_top_feature_vs_target_boxplot(
+        self,
+        df: pd.DataFrame,
+        target_col: str,
+        top_feature: str,
+        output_dir: str,
+        report: VisualizationReport,
+    ) -> None:
+        """Classification variant: box plot of the top feature split by class.
+
+        Binary 0/1 targets get concrete tick labels from self.negative_label
+        / self.positive_label (e.g. "On-time (0)" / "Late (1)" for this
+        project's Olist model) rather than bare "0"/"1" -- multiclass
+        targets fall back to the class values themselves, since a fixed
+        pair of labels can't describe more than two classes.
+        """
         target_values = sorted(df[target_col].dropna().unique())
         palette = {v: (_PRIMARY if i == 0 else _RED) for i, v in enumerate(target_values)}
-        labels = {v: f"On-time ({v})" if v == 0 else f"Late ({v})"
-                  for v in target_values} if set(target_values) <= {0, 1} else None
+
+        order = [str(v) for v in target_values]
+        tick_labels = (
+            [f"{self.negative_label} (0)", f"{self.positive_label} (1)"]
+            if set(target_values) <= {0, 1} and len(target_values) == 2
+            else order
+        )
 
         with plt.style.context(_STYLE):
             fig, ax = plt.subplots(figsize=_FIG_SIZE)
             plot_df = df[[target_col, top_feature]].dropna().copy()
             plot_df[target_col] = plot_df[target_col].astype(str)
 
-            order = [str(v) for v in target_values]
             pal = {str(k): v for k, v in palette.items()}
-            tick_labels = (
-                [labels[v] for v in target_values] if labels else order
-            )
 
             sns.boxplot(
                 data=plot_df,
@@ -469,12 +643,12 @@ class VisualizationAgent:
                 width=0.5,
                 flierprops={"marker": ".", "markersize": 3, "alpha": 0.3},
             )
-            ax.set_xticks(range(len(tick_labels)))
+            ax.set_xticks(range(len(order)))
             ax.set_xticklabels(tick_labels, fontsize=_LABEL_SIZE)
-            ax.set_xlabel("Delivery outcome", fontsize=_LABEL_SIZE)
+            ax.set_xlabel(f"{self.unit_label.capitalize()} outcome", fontsize=_LABEL_SIZE)
             ax.set_ylabel(top_feature, fontsize=_LABEL_SIZE)
             ax.set_title(
-                f"Distribution of '{top_feature}'\nby Delivery Outcome",
+                f"Distribution of '{top_feature}'\nby {self.unit_label.capitalize()} Outcome",
                 fontsize=_TITLE_SIZE, pad=10,
             )
             fig.tight_layout()
@@ -486,7 +660,51 @@ class VisualizationAgent:
             "top_feature_vs_target", path,
             f"Box plot of '{top_feature}' split by {target_col}",
         )
-        logger.info("Saved top-feature vs. target chart → %s", path)
+        logger.info("Saved top-feature vs. target box plot → %s", path)
+
+    def _render_top_feature_vs_target_scatter(
+        self,
+        df: pd.DataFrame,
+        target_col: str,
+        top_feature: str,
+        output_dir: str,
+        report: VisualizationReport,
+    ) -> None:
+        """Regression variant: scatter of the top feature vs. the continuous target."""
+        with plt.style.context(_STYLE):
+            fig, ax = plt.subplots(figsize=_FIG_SIZE)
+            plot_df = df[[target_col, top_feature]].dropna()
+
+            ax.scatter(
+                plot_df[top_feature], plot_df[target_col], color=_PRIMARY,
+                alpha=0.4, edgecolor="white", linewidth=0.3, s=20,
+            )
+
+            if len(plot_df) >= 2:
+                coeffs = np.polyfit(plot_df[top_feature], plot_df[target_col], 1)
+                x_range = np.linspace(plot_df[top_feature].min(), plot_df[top_feature].max(), 100)
+                ax.plot(
+                    x_range, np.polyval(coeffs, x_range), color=_RED,
+                    linewidth=2, linestyle="--", label="Linear trend",
+                )
+                ax.legend(fontsize=_LABEL_SIZE - 1)
+
+            ax.set_xlabel(top_feature, fontsize=_LABEL_SIZE)
+            ax.set_ylabel(target_col, fontsize=_LABEL_SIZE)
+            ax.set_title(
+                f"'{top_feature}' vs. '{target_col}'",
+                fontsize=_TITLE_SIZE, pad=10,
+            )
+            fig.tight_layout()
+            path = os.path.join(output_dir, "06_top_feature_vs_target.png")
+            fig.savefig(path, dpi=_DPI, bbox_inches="tight")
+            plt.close(fig)
+
+        report.add(
+            "top_feature_vs_target", path,
+            f"Scatter plot of '{top_feature}' vs. continuous target '{target_col}'",
+        )
+        logger.info("Saved top-feature vs. target scatter → %s", path)
 
     # ------------------------------------------------------------------
     # Public interface
@@ -560,16 +778,23 @@ class VisualizationAgent:
         corr_matrix: dict = eda.get("correlation_matrix") or {}
         confusion_matrix = ml.get("confusion_matrix")
         threshold_metrics = ml.get("threshold_metrics")
+        test_predictions = ml.get("test_predictions")
         task_type: str = ml.get("task_type", "binary_classification")
 
         # --- Generate charts ---
         self._chart_distributions(df, feature_importances, output_dir, report)
         self._chart_correlation_heatmap(corr_matrix, output_dir, report)
         self._chart_feature_importance(feature_importances, output_dir, report)
-        self._chart_confusion_matrix(confusion_matrix, output_dir, report, task_type)
-        self._chart_threshold_tradeoff(threshold_metrics, output_dir, report)
+
+        if task_type == "regression":
+            self._chart_actual_vs_predicted(test_predictions, output_dir, report)
+            self._chart_residuals(test_predictions, output_dir, report)
+        else:
+            self._chart_confusion_matrix(confusion_matrix, output_dir, report, task_type)
+            self._chart_threshold_tradeoff(threshold_metrics, output_dir, report)
+
         self._chart_top_feature_vs_target(
-            df, target_col, feature_importances, output_dir, report
+            df, target_col, feature_importances, output_dir, report, task_type=task_type
         )
 
         self.report_ = report
@@ -589,7 +814,15 @@ class VisualizationAgent:
 if __name__ == "__main__":
     import sys
 
-    agent = VisualizationAgent()
+    # This project's model always predicts one concrete thing: whether an
+    # ORDER will be a LATE DELIVERY. Passed explicitly here rather than
+    # relying on VisualizationAgent's generic defaults (see class
+    # docstring) -- the agent itself is domain-agnostic.
+    agent = VisualizationAgent(
+        positive_label="Late",
+        negative_label="On-time",
+        unit_label="order",
+    )
     success, result = agent.run(
         eda_report_path="data/processed/olist_flattened_cleaned_eda_report.json",
         ml_report_path="data/processed/olist_flattened_cleaned_features_ml_report.json",

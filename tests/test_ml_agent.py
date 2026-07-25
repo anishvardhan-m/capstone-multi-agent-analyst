@@ -119,7 +119,7 @@ def test_eval_regression_metrics_on_known_example():
     model = DummyRegressor(strategy="mean")
     model.fit(X, y_test)
 
-    metrics = _eval_regression(model, X, y_test)
+    metrics, y_pred = _eval_regression(model, X, y_test)
 
     # Errors: [-1.5, -0.5, 0.5, 1.5] → RMSE = sqrt(mean([2.25,0.25,0.25,2.25]))
     expected_rmse = np.sqrt(np.mean([2.25, 0.25, 0.25, 2.25]))
@@ -127,6 +127,39 @@ def test_eval_regression_metrics_on_known_example():
 
     assert metrics["rmse"] == pytest.approx(expected_rmse, rel=1e-4)
     assert metrics["mae"] == pytest.approx(expected_mae, rel=1e-4)
+    assert list(y_pred) == pytest.approx([2.5, 2.5, 2.5, 2.5])
+
+
+# ---------------------------------------------------------------------------
+# test_predictions (regression diagnostics, consumed by VisualizationAgent)
+# ---------------------------------------------------------------------------
+
+def test_build_test_predictions_keeps_all_points_under_the_cap():
+    from src.agents.ml_agent import _build_test_predictions
+
+    y_test = pd.Series([1.0, 2.0, 3.0])
+    y_pred = np.array([1.1, 1.9, 3.2])
+
+    result = _build_test_predictions(y_test, y_pred, max_points=10)
+
+    assert result["actual"] == pytest.approx([1.0, 2.0, 3.0])
+    assert result["predicted"] == pytest.approx([1.1, 1.9, 3.2])
+
+
+def test_build_test_predictions_downsamples_above_the_cap():
+    from src.agents.ml_agent import _build_test_predictions
+
+    y_test = pd.Series(np.arange(100, dtype=float))
+    y_pred = np.arange(100, dtype=float) + 0.5
+
+    result = _build_test_predictions(y_test, y_pred, max_points=10)
+
+    assert len(result["actual"]) == 10
+    assert len(result["predicted"]) == 10
+    # Every sampled (actual, predicted) pair must still be a real, matched
+    # observation from the original arrays -- not independently resampled.
+    for a, p in zip(result["actual"], result["predicted"]):
+        assert p == pytest.approx(a + 0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +438,27 @@ def test_agent_e2e_regression(regression_csv):
     assert "rmse" in report.test_metrics
     assert "mae" in report.test_metrics
     assert "adjusted_r2" in report.test_metrics
+
+    # test_predictions must be populated (VisualizationAgent's actual-vs-
+    # predicted/residual charts read this) and match the held-out test size.
+    assert report.test_predictions is not None
+    n_test = round(400 * 0.2)  # MLAgent's default test_size
+    assert len(report.test_predictions["actual"]) == n_test
+    assert len(report.test_predictions["predicted"]) == n_test
+
+    with open(report_path) as f:
+        data = json.load(f)
+    assert "test_predictions" in data
+    assert data["test_predictions"]["actual"] is not None
+
+
+def test_agent_e2e_classification_has_no_test_predictions(classification_csv):
+    """test_predictions is a regression-only field -- classification reports
+    already have confusion_matrix/threshold_metrics for diagnostics and
+    should not carry a redundant (and here, meaningless) predictions list."""
+    agent = MLAgent()
+    agent.run(classification_csv, target_col="label", id_col="row_id")
+    assert agent.report_.test_predictions is None
 
 
 # ---------------------------------------------------------------------------
