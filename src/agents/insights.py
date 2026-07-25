@@ -7,7 +7,7 @@ Responsibilities (per the capstone handbook, Section 6.7): read the EDA
 and ML reports, summarize their key figures into a compact prompt, and
 call an LLM to produce a plain-English narrative that connects the
 model's findings to concrete business recommendations -- grounded
-directly in the decision-threshold tradeoff numbers from the ML report.
+directly in the model's actual performance numbers.
 
 Design note: this is the first agent in the pipeline that makes a genuine
 LLM call; every prior agent is fully deterministic. Two things keep that
@@ -19,6 +19,19 @@ non-determinism contained:
   2. The LLM client is injected via the constructor, so tests exercise
      the prompt-construction and fallback logic against a mock client --
      no real network calls happen in the test suite.
+
+Genericity (handbook Section 8.2): this agent must work for classification
+AND regression, on any dataset -- not just the Olist late-delivery model.
+Two things keep it generic:
+  1. The prompt branches on ml_report["task_type"]. Classification gets
+     accuracy/ROC-AUC/confusion-matrix/threshold-tradeoff language;
+     regression gets RMSE/MAE/Adjusted R^2 and error-magnitude language.
+     Neither branch ever borrows the other's vocabulary.
+  2. The business-domain labels (what a "positive case" is called, what a
+     row is called) are constructor parameters with generic defaults, not
+     hardcoded strings. Callers with a concrete domain (e.g. this
+     project's Olist model) pass "late delivery"/"on-time delivery"/
+     "order" explicitly -- see the __main__ block below.
 """
 
 from __future__ import annotations
@@ -52,21 +65,19 @@ _SYSTEM_PROMPT = (
     "predicted."
 )
 
-# This project's model always predicts one concrete thing: whether an
-# ORDER will be a LATE DELIVERY (see MLAgent/VisualizationAgent's shared
-# target_col default "is_late_delivery" and the visualizer's "On-time (0)"
-# / "Late (1)" chart labels). Naming that explicitly in the prompt -- and
-# describing the confusion matrix in those terms -- is what keeps the LLM's
-# narrative concrete instead of drifting into generic "positive class"
-# phrasing.
-_POSITIVE_LABEL = "late delivery"
-_NEGATIVE_LABEL = "on-time delivery"
-_UNIT_LABEL = "order"
+# Generic fallback labels used only when a caller doesn't supply a domain
+# vocabulary. Callers with a concrete domain (e.g. this project's Olist
+# late-delivery model) should pass their own labels into
+# BusinessInsightsAgent's constructor instead of relying on these.
+_DEFAULT_UNIT_LABEL = "record"
+_DEFAULT_POSITIVE_LABEL = "positive case"
+_DEFAULT_NEGATIVE_LABEL = "negative case"
 
 # Feature importances below this magnitude are statistical noise, not real
-# signal (e.g. customer_unique_id at 0.0004 vs. customer_state at 0.0476).
-# Filtering them out of the prompt itself is what stops the LLM from
-# inventing a business story for a feature that isn't actually predictive.
+# signal (e.g. a near-zero id-column importance vs. a genuine driver an
+# order of magnitude larger). Filtering them out of the prompt itself is
+# what stops the LLM from inventing a business story for a feature that
+# isn't actually predictive.
 _IMPORTANCE_MATERIALITY_THRESHOLD = 0.01
 
 
@@ -91,7 +102,7 @@ class InsightsReport:
 
 
 # ---------------------------------------------------------------------------
-# Prompt construction helpers
+# EDA summary (shared by classification and regression)
 # ---------------------------------------------------------------------------
 
 def _top_correlations(corr_matrix: dict, top_n: int = 5) -> list[tuple[str, str, float]]:
@@ -162,6 +173,44 @@ def _format_eda_summary(eda: dict) -> str:
     return "\n".join(lines) if lines else "(no EDA summary available)"
 
 
+# ---------------------------------------------------------------------------
+# ML summary helpers shared by both task types
+# ---------------------------------------------------------------------------
+
+def _format_feature_importance_lines(importances: dict) -> list[str]:
+    """Render feature importances filtered to those above materiality.
+
+    Shared by the classification and regression summaries so both apply
+    the exact same noise filter.
+    """
+    lines: list[str] = []
+    material = [
+        (f, v) for f, v in importances.items()
+        if abs(v) > _IMPORTANCE_MATERIALITY_THRESHOLD
+    ]
+    if material:
+        material.sort(key=lambda x: x[1], reverse=True)
+        material = material[:8]
+        lines.append(
+            f"- Top features by importance (only features with importance > "
+            f"{_IMPORTANCE_MATERIALITY_THRESHOLD} are shown -- every other "
+            f"feature the model saw was statistical noise, not a real driver):"
+        )
+        for feat, val in material:
+            lines.append(f"    {feat}: {val:.4f}")
+    elif importances:
+        lines.append(
+            f"- No feature cleared the {_IMPORTANCE_MATERIALITY_THRESHOLD} "
+            f"importance materiality threshold -- treat this model as not "
+            f"having an identifiable dominant driver."
+        )
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# Classification: ML summary + prompt
+# ---------------------------------------------------------------------------
+
 def _accuracy_from_confusion_matrix(cm: Optional[list]) -> Optional[float]:
     """Compute overall accuracy (trace / total) directly from a confusion matrix.
 
@@ -180,30 +229,40 @@ def _accuracy_from_confusion_matrix(cm: Optional[list]) -> Optional[float]:
     return correct / total
 
 
-def _confusion_breakdown(cm: Optional[list]) -> Optional[str]:
-    """Describe a binary confusion matrix in concrete late-delivery terms.
+def _confusion_breakdown(
+    cm: Optional[list],
+    unit_label: str,
+    positive_label: str,
+    negative_label: str,
+) -> Optional[str]:
+    """Describe a binary confusion matrix in the caller's domain terms.
 
     Assumes sklearn's confusion_matrix(y_true, y_pred) convention with
     classes sorted [0, 1] -- matches MLAgent's binary-classification output
-    (0 = on-time, 1 = late), so cm[0][0]=TN, cm[0][1]=FP, cm[1][0]=FN,
+    (0 = negative, 1 = positive), so cm[0][0]=TN, cm[0][1]=FP, cm[1][0]=FN,
     cm[1][1]=TP. Spelling this out in words (rather than leaving the LLM to
-    infer it from the raw matrix) is what let the original narrative say
-    "1,021 late deliveries caught" instead of a generic "positive event."
+    infer it from the raw matrix) is what lets the narrative say concrete
+    things like "1,021 late deliveries caught" instead of a generic
+    "positive event."
     """
     if not cm or len(cm) != 2 or len(cm[0]) != 2:
         return None
     tn, fp = cm[0]
     fn, tp = cm[1]
     return (
-        f"    {tp:,} orders correctly caught as late deliveries\n"
-        f"    {fn:,} actual late deliveries the model missed (predicted on-time)\n"
-        f"    {fp:,} on-time orders incorrectly flagged as late deliveries\n"
-        f"    {tn:,} on-time orders correctly identified as on-time"
+        f"    {tp:,} {unit_label}s correctly identified as {positive_label}\n"
+        f"    {fn:,} {unit_label}s that were actually {positive_label} but "
+        f"the model missed (predicted {negative_label})\n"
+        f"    {fp:,} {unit_label}s that were actually {negative_label} but "
+        f"were incorrectly flagged as {positive_label}\n"
+        f"    {tn:,} {unit_label}s correctly identified as {negative_label}"
     )
 
 
-def _format_ml_summary(ml: dict) -> str:
-    """Render the ML report's key figures as plain text (not raw JSON)."""
+def _format_ml_summary_classification(
+    ml: dict, positive_label: str, negative_label: str, unit_label: str
+) -> str:
+    """Render a classification ML report's key figures as plain text."""
     lines: list[str] = []
 
     lines.append(f"- Task type: {ml.get('task_type', 'unknown')}")
@@ -231,35 +290,15 @@ def _format_ml_summary(ml: dict) -> str:
 
     if cm:
         lines.append(f"- Confusion matrix at threshold 0.5 (rows=actual, cols=predicted): {cm}")
-        breakdown = _confusion_breakdown(cm)
+        breakdown = _confusion_breakdown(cm, unit_label, positive_label, negative_label)
         if breakdown:
             lines.append(f"- That confusion matrix, spelled out in plain terms:\n{breakdown}")
 
-    importances = ml.get("feature_importances") or {}
-    material = [
-        (f, v) for f, v in importances.items()
-        if abs(v) > _IMPORTANCE_MATERIALITY_THRESHOLD
-    ]
-    if material:
-        material.sort(key=lambda x: x[1], reverse=True)
-        material = material[:8]
-        lines.append(
-            f"- Top features by importance (only features with importance > "
-            f"{_IMPORTANCE_MATERIALITY_THRESHOLD} are shown -- every other "
-            f"feature the model saw was statistical noise, not a real driver):"
-        )
-        for feat, val in material:
-            lines.append(f"    {feat}: {val:.4f}")
-    elif importances:
-        lines.append(
-            f"- No feature cleared the {_IMPORTANCE_MATERIALITY_THRESHOLD} "
-            f"importance materiality threshold -- treat this model as not "
-            f"having an identifiable dominant driver."
-        )
+    lines.extend(_format_feature_importance_lines(ml.get("feature_importances") or {}))
 
     thresholds = ml.get("threshold_metrics")
     if thresholds:
-        lines.append(f"- Decision threshold tradeoff for catching {_POSITIVE_LABEL}s:")
+        lines.append(f"- Decision threshold tradeoff for catching cases of {positive_label}:")
         for t in thresholds:
             lines.append(
                 f"    threshold={t['threshold']}: "
@@ -271,35 +310,36 @@ def _format_ml_summary(ml: dict) -> str:
     return "\n".join(lines) if lines else "(no ML summary available)"
 
 
-def _build_prompt(eda: dict, ml: dict) -> str:
-    """Build the full user prompt sent to the LLM.
-
-    Deliberately summarizes both reports into readable bullet points
-    rather than dumping raw JSON, so the model reasons over the numbers
-    that matter instead of parsing structure.
-    """
-    eda_summary = _format_eda_summary(eda)
-    ml_summary = _format_ml_summary(ml)
+def _build_classification_prompt(
+    eda_summary: str,
+    ml_summary: str,
+    positive_label: str,
+    negative_label: str,
+    unit_label: str,
+) -> str:
     return (
         f"Here is a summary of an exploratory data analysis and a trained "
-        f"predictive model. The model predicts whether an {_UNIT_LABEL} will "
-        f"be a {_POSITIVE_LABEL} -- every metric below (accuracy, ROC-AUC, "
+        f"predictive model. The model predicts whether a {unit_label} will "
+        f"be a {positive_label} -- every metric below (accuracy, ROC-AUC, "
         f"precision, recall, confusion matrix, feature importances) is "
-        f"scored against that same target: {_POSITIVE_LABEL} (positive/"
-        f"minority class) vs. {_NEGATIVE_LABEL} (negative/majority class). "
+        f"scored against that same target: {positive_label} (positive/"
+        f"minority class) vs. {negative_label} (negative/majority class). "
         f"Write a business insights narrative in markdown with exactly "
         f"three sections:\n\n"
         "## What We Found\n"
         f"A plain-English summary of what the model found and how well it "
-        f"performs at predicting {_POSITIVE_LABEL}s. Every sentence in this "
-        f"section must refer to '{_POSITIVE_LABEL}' and '{_UNIT_LABEL}s' by "
-        f"name -- do not use generic, templated ML-report language like "
-        f"'business outcome', 'positive outcome', 'positive event', or 'the "
-        f"target'.\n\n"
+        f"performs at predicting cases of {positive_label}. Every sentence "
+        f"in this section must refer to '{positive_label}' and "
+        f"'{unit_label}s' by name -- do not use generic, templated "
+        f"ML-report language like 'business outcome', 'positive outcome', "
+        f"'positive event', or 'the target'. Do NOT pluralize "
+        f"'{positive_label}' by simply appending 's' if that would produce "
+        f"an awkward or incorrect plural -- write 'cases of {positive_label}' "
+        f"or 'instances of {positive_label}' instead.\n\n"
         "## What Matters Most\n"
-        f"Which factors matter most for predicting a {_POSITIVE_LABEL} and "
+        f"Which factors matter most for predicting a {positive_label} and "
         f"why, explained in business terms (not statistical jargon), "
-        f"continuing to refer to {_POSITIVE_LABEL}s and {_UNIT_LABEL}s "
+        f"continuing to refer to '{positive_label}' cases and {unit_label}s "
         f"concretely rather than generically. Only discuss features listed "
         f"under 'Top features by importance' below -- every one of those "
         f"already cleared the {_IMPORTANCE_MATERIALITY_THRESHOLD} "
@@ -308,11 +348,11 @@ def _build_prompt(eda: dict, ml: dict) -> str:
         f"listed elsewhere (e.g. in the confusion matrix section or your "
         f"own general knowledge of the dataset) -- a near-zero importance "
         f"means the model found no real signal there, so inventing a "
-        f"reason for it (e.g. 'repeat offenders') is not supported by the "
-        f"data and must not appear in the narrative.\n\n"
+        f"reason for it is not supported by the data and must not appear "
+        f"in the narrative.\n\n"
         "## Recommendations\n"
-        f"2-3 concrete, actionable recommendations for handling "
-        f"{_POSITIVE_LABEL}s. Each must be tied directly to the specific "
+        f"2-3 concrete, actionable recommendations for handling cases of "
+        f"{positive_label}. Each must be tied directly to the specific "
         f"decision-threshold tradeoff numbers below -- name the actual "
         f"precision/recall values and which threshold to use for which "
         f"business goal.\n\n"
@@ -332,6 +372,136 @@ def _build_prompt(eda: dict, ml: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Regression: ML summary + prompt
+# ---------------------------------------------------------------------------
+
+def _format_ml_summary_regression(ml: dict, unit_label: str) -> str:
+    """Render a regression ML report's key figures as plain text.
+
+    Deliberately has no accuracy/ROC-AUC/confusion-matrix/threshold
+    vocabulary -- those concepts don't exist for a continuous target.
+    """
+    lines: list[str] = []
+
+    lines.append(f"- Task type: {ml.get('task_type', 'unknown')}")
+    lines.append(f"- Best model: {ml.get('best_model_name', 'unknown')}")
+
+    test_metrics = ml.get("test_metrics") or {}
+    if "rmse" in test_metrics:
+        lines.append(
+            f"- RMSE (Root Mean Squared Error -- typical prediction error "
+            f"in the target's original units, penalizes large misses more "
+            f"heavily than small ones): {test_metrics['rmse']:.4f}"
+        )
+    if "mae" in test_metrics:
+        lines.append(
+            f"- MAE (Mean Absolute Error -- the typical size of a "
+            f"prediction error in the target's original units, treating "
+            f"every miss equally): {test_metrics['mae']:.4f}"
+        )
+    if "adjusted_r2" in test_metrics:
+        lines.append(
+            f"- Adjusted R^2 (fraction of the target's variance the model "
+            f"explains, penalized for the number of features used; 1.0 = "
+            f"perfect, 0.0 = no better than always guessing the average "
+            f"{unit_label}'s value): {test_metrics['adjusted_r2']:.4f}"
+        )
+    elif "r2" in test_metrics:
+        lines.append(
+            f"- R^2 (fraction of the target's variance the model explains; "
+            f"1.0 = perfect, 0.0 = no better than always guessing the "
+            f"average {unit_label}'s value): {test_metrics['r2']:.4f}"
+        )
+
+    lines.extend(_format_feature_importance_lines(ml.get("feature_importances") or {}))
+
+    return "\n".join(lines) if lines else "(no ML summary available)"
+
+
+def _build_regression_prompt(eda_summary: str, ml_summary: str, unit_label: str) -> str:
+    return (
+        f"Here is a summary of an exploratory data analysis and a trained "
+        f"predictive model. The model predicts a continuous numeric value "
+        f"for each {unit_label} -- every metric below (RMSE, MAE, R^2, "
+        f"feature importances) describes how close those predictions come "
+        f"to the true value. This is a REGRESSION model: there is no "
+        f"positive/negative class, no accuracy, no ROC-AUC, and no "
+        f"confusion matrix for this model -- do not invent any of those "
+        f"concepts anywhere in the narrative. Write a business insights "
+        f"narrative in markdown with exactly three sections:\n\n"
+        "## What We Found\n"
+        f"A plain-English summary of what the model found and how well it "
+        f"predicts the target value for each {unit_label}, stated in terms "
+        f"of typical prediction error using the MAE/RMSE figures below "
+        f"(e.g. 'predictions are typically off by X') rather than accuracy "
+        f"or classification language.\n\n"
+        "## What Matters Most\n"
+        f"Which factors matter most for predicting the target value and "
+        f"why, explained in business terms (not statistical jargon), "
+        f"referring to {unit_label}s concretely. Only discuss features "
+        f"listed under 'Top features by importance' below -- every one of "
+        f"those already cleared the {_IMPORTANCE_MATERIALITY_THRESHOLD} "
+        f"materiality threshold. Do not draw a business conclusion from any "
+        f"feature with a near-zero importance value, even if you see it "
+        f"elsewhere or from your own general knowledge of the dataset -- a "
+        f"near-zero importance means the model found no real signal "
+        f"there.\n\n"
+        "## Recommendations\n"
+        f"2-3 concrete, actionable recommendations. Each must be tied "
+        f"directly to the practical size of the prediction error -- use "
+        f"the actual MAE/RMSE figures below to state something like "
+        f"'predictions are typically off by X, which means...' and explain "
+        f"what that error magnitude means for a real business decision "
+        f"(e.g. how much safety margin to build in, or when to trust the "
+        f"model's number vs. seek a human estimate). Do NOT phrase any "
+        f"recommendation in terms of decision thresholds, precision, or "
+        f"recall -- those concepts don't apply to a regression model.\n\n"
+        "=== EXPLORATORY DATA ANALYSIS ===\n"
+        f"{eda_summary}\n\n"
+        "=== MODEL RESULTS ===\n"
+        f"{ml_summary}\n"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Top-level prompt dispatcher
+# ---------------------------------------------------------------------------
+
+def _build_prompt(
+    eda: dict,
+    ml: dict,
+    positive_label: Optional[str] = None,
+    negative_label: Optional[str] = None,
+    unit_label: Optional[str] = None,
+) -> str:
+    """Build the full user prompt sent to the LLM.
+
+    Deliberately summarizes both reports into readable bullet points
+    rather than dumping raw JSON, so the model reasons over the numbers
+    that matter instead of parsing structure. Branches on
+    ml["task_type"]: regression gets RMSE/MAE/R^2 and error-magnitude
+    language; everything else (binary/multiclass classification) gets
+    accuracy/ROC-AUC/confusion-matrix/threshold-tradeoff language. The two
+    vocabularies never mix.
+    """
+    unit_label = unit_label or _DEFAULT_UNIT_LABEL
+    eda_summary = _format_eda_summary(eda)
+
+    if ml.get("task_type") == "regression":
+        ml_summary = _format_ml_summary_regression(ml, unit_label)
+        return _build_regression_prompt(eda_summary, ml_summary, unit_label)
+
+    positive_label = positive_label or _DEFAULT_POSITIVE_LABEL
+    negative_label = negative_label or _DEFAULT_NEGATIVE_LABEL
+    ml_summary = _format_ml_summary_classification(
+        ml, positive_label, negative_label, unit_label
+    )
+    return _build_classification_prompt(
+        eda_summary, ml_summary, positive_label, negative_label, unit_label
+    )
+
+
+# ---------------------------------------------------------------------------
 # BusinessInsightsAgent
 # ---------------------------------------------------------------------------
 
@@ -344,10 +514,28 @@ class BusinessInsightsAgent:
         Pre-built client to use instead of constructing one from the
         OPENAI_API_KEY / OPENAI_API_BASE_URL environment variables. Tests
         inject a mock here so no real network call is made.
+    positive_label, negative_label : str | None
+        What the model's positive/negative class is called in this
+        business domain (e.g. "late delivery" / "on-time delivery").
+        Ignored for regression reports. Defaults to generic "positive
+        case" / "negative case" when not supplied -- callers with a real
+        domain should always pass their own labels.
+    unit_label : str | None
+        What one row/prediction is called in this business domain (e.g.
+        "order", "house", "customer"). Defaults to generic "record".
     """
 
-    def __init__(self, client: Optional[OpenAI] = None):
+    def __init__(
+        self,
+        client: Optional[OpenAI] = None,
+        positive_label: Optional[str] = None,
+        negative_label: Optional[str] = None,
+        unit_label: Optional[str] = None,
+    ):
         self._client = client
+        self.positive_label = positive_label
+        self.negative_label = negative_label
+        self.unit_label = unit_label
         self.report_: Optional[InsightsReport] = None
 
     def _get_client(self) -> OpenAI:
@@ -423,7 +611,12 @@ class BusinessInsightsAgent:
             logger.error("Failed to read ML report: %s", exc)
             return False, f"Failed to read ML report: {exc}"
 
-        prompt = _build_prompt(eda, ml)
+        prompt = _build_prompt(
+            eda, ml,
+            positive_label=self.positive_label,
+            negative_label=self.negative_label,
+            unit_label=self.unit_label,
+        )
         client = self._get_client()
 
         narrative: Optional[str] = None
@@ -464,7 +657,15 @@ class BusinessInsightsAgent:
 if __name__ == "__main__":
     import sys
 
-    agent = BusinessInsightsAgent()
+    # This project's model always predicts one concrete thing: whether an
+    # ORDER will be a LATE DELIVERY. Passed explicitly here rather than
+    # relying on a hardcoded default, since BusinessInsightsAgent itself
+    # is domain-agnostic (see class docstring).
+    agent = BusinessInsightsAgent(
+        positive_label="late delivery",
+        negative_label="on-time delivery",
+        unit_label="order",
+    )
     success, result = agent.run(
         eda_report_path="data/processed/olist_flattened_cleaned_eda_report.json",
         ml_report_path="data/processed/olist_flattened_cleaned_features_ml_report.json",

@@ -135,6 +135,13 @@ class MLReport:
         Classification only. Corresponds to the default (0.5) threshold.
     feature_importances : dict
         Top-N importances from the best model.
+    test_predictions : dict | None
+        Regression only. {"actual": [...], "predicted": [...]} pairs from
+        the held-out test set -- the exact predictions used to compute
+        rmse/mae/r2 above. Downsampled to at most _MAX_TEST_PREDICTIONS
+        points when the test set is larger (affects only how many points
+        the Visualization Agent's actual-vs-predicted/residual scatter
+        plots draw, not any reported metric).
     """
 
     task_type: str
@@ -145,6 +152,7 @@ class MLReport:
     confusion_matrix: Optional[list] = None
     threshold_metrics: Optional[list] = None
     feature_importances: dict = field(default_factory=dict)
+    test_predictions: Optional[dict] = None
 
     def to_dict(self) -> dict:
         return {
@@ -156,6 +164,7 @@ class MLReport:
             "confusion_matrix": self.confusion_matrix,
             "threshold_metrics": self.threshold_metrics,
             "feature_importances": self.feature_importances,
+            "test_predictions": self.test_predictions,
         }
 
 
@@ -395,18 +404,55 @@ def _eval_regression(
     model: Any,
     X_test: pd.DataFrame,
     y_test: pd.Series,
-) -> dict:
-    """Compute held-out regression metrics."""
+) -> tuple[dict, np.ndarray]:
+    """Compute held-out regression metrics; also return the raw predictions.
+
+    The raw predictions are returned (not just aggregate metrics) so the
+    caller can persist actual-vs-predicted pairs in the report -- the
+    Visualization Agent needs genuine held-out predictions to draw an
+    actual-vs-predicted scatter and a residual plot, and reconstructing
+    them independently (re-loading the model, re-deriving the split) would
+    risk silently drifting from the exact test set used here.
+    """
     y_pred = model.predict(X_test)
     rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
     mae = float(mean_absolute_error(y_test, y_pred))
     r2 = float(r2_score(y_test, y_pred))
     adj_r2 = adjusted_r2(r2, n_samples=len(y_test), n_features=X_test.shape[1])
-    return {
+    metrics = {
         "rmse": round(rmse, 6),
         "mae": round(mae, 6),
         "r2": round(r2, 6),
         "adjusted_r2": round(adj_r2, 6),
+    }
+    return metrics, y_pred
+
+
+_MAX_TEST_PREDICTIONS = 2000
+
+
+def _build_test_predictions(
+    y_test: pd.Series,
+    y_pred: np.ndarray,
+    max_points: int = _MAX_TEST_PREDICTIONS,
+) -> dict:
+    """Package held-out actual/predicted pairs for regression diagnostics.
+
+    Downsampled deterministically to at most max_points when the test set
+    is larger -- this only affects how many points the Visualization
+    Agent's scatter plots draw, not any reported metric (those are always
+    computed on the full test set in _eval_regression).
+    """
+    y_test_arr = np.asarray(y_test, dtype=float)
+    y_pred_arr = np.asarray(y_pred, dtype=float)
+    n = len(y_test_arr)
+    if n > max_points:
+        idx = np.random.default_rng(_RANDOM_STATE).choice(n, max_points, replace=False)
+        y_test_arr = y_test_arr[idx]
+        y_pred_arr = y_pred_arr[idx]
+    return {
+        "actual": [round(float(v), 6) for v in y_test_arr],
+        "predicted": [round(float(v), 6) for v in y_pred_arr],
     }
 
 
@@ -586,8 +632,9 @@ class MLAgent:
                 feature_importances=feature_importances,
             )
         else:
-            test_metrics = _eval_regression(best_model, X_test, y_test)
+            test_metrics, y_pred = _eval_regression(best_model, X_test, y_test)
             logger.info("Test metrics: %s", test_metrics)
+            test_predictions = _build_test_predictions(y_test, y_pred)
             return MLReport(
                 task_type=task_type,
                 best_model_name=best_name,
@@ -597,6 +644,7 @@ class MLAgent:
                 confusion_matrix=None,
                 threshold_metrics=None,
                 feature_importances=feature_importances,
+                test_predictions=test_predictions,
             )
 
     # ------------------------------------------------------------------
