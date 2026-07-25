@@ -1,0 +1,10 @@
+## What We Found
+We built a model to determine if an order will be a late delivery, and the model achieves an overall accuracy of 74.3% when predicting late delivery for orders. The model also scores 0.769 on ROC-AUC, meaning it ranks the likelihood of a late delivery in orders effectively. At the default 0.5 threshold, the model correctly catches 1,021 late delivery orders, misses 544 late deliveries, and incorrectly flags 4,416 on-time orders as a late delivery.
+
+## What Matters Most
+The customer's state is the top factor for determining a late delivery, because different states have varying shipping routes and carrier options, meaning an order from a distant state has a higher chance of becoming a late delivery. The estimated delivery date on the order is the second most important factor, as orders with very short gaps between purchase and delivery are more prone to a late delivery. The number of days between the order purchase and the estimated delivery date is the third most important factor, because a longer wait period gives more time for an order to slip into a late delivery. The customer's zip code prefix also impacts whether an order arrives on time or becomes a late delivery, reflecting how local distribution infrastructure affects the reliability of a late delivery for that order.
+
+## Recommendations
+1. To minimize missed late deliveries and prioritize full catch rates, apply a 0.3 threshold. At this threshold, the model achieves a recall of 0.897, catching 89.7% of late deliveries, though only 11.4% of the flagged orders are truly a late delivery.
+2. To balance catching late deliveries with managing investigation workload, apply a 0.4 threshold. This yields a recall of 0.802, catching 80.2% of late deliveries, while 14.9% of flagged orders are genuinely a late delivery.
+3. To ensure high certainty before triggering a late delivery penalty or compensation process, apply a 0.5 threshold. At this threshold, precision reaches 0.188, so 18.8% of flagged orders are actually a late delivery, though the model misses 34.8% of late deliveries because recall drops to 0.652.
