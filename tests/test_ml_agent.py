@@ -15,11 +15,17 @@ import sys
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.linear_model import LinearRegression
 from sklearn.model_selection import train_test_split
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.agents.ml_agent import MLAgent, _eval_classification, _eval_regression
+from src.agents.ml_agent import (
+    MLAgent,
+    _eval_classification,
+    _eval_regression,
+    _run_grid_search,
+)
 from src.tools.ml_tools import adjusted_r2, detect_task_type
 
 
@@ -170,6 +176,85 @@ def test_scaler_stats_differ_train_only_vs_full_data():
 
 
 # ---------------------------------------------------------------------------
+# GridSearchCV hyperparameter tuning
+# ---------------------------------------------------------------------------
+
+def test_grid_search_tries_multiple_configurations():
+    """GridSearchCV must actually try every hyperparameter combination in the
+    configured grid, not just the model's default configuration — and
+    _run_grid_search must surface that same result."""
+    from src.agents.ml_agent import _PARAM_GRIDS
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.model_selection import GridSearchCV, StratifiedKFold
+
+    rng = np.random.default_rng(7)
+    n = 200
+    X = pd.DataFrame(rng.standard_normal((n, 4)), columns=[f"f{i}" for i in range(4)])
+    y = pd.Series((X["f0"] + X["f1"] > 0).astype(int))
+
+    grid = _PARAM_GRIDS["LogisticRegression"]
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+    # Reference GridSearchCV run: confirm every configured C value is tried.
+    reference = GridSearchCV(
+        LogisticRegression(max_iter=1000, random_state=42),
+        grid, cv=cv, scoring="f1_macro", n_jobs=1,
+    )
+    reference.fit(X, y)
+    assert len(reference.cv_results_["params"]) == len(grid["C"])
+    assert reference.best_params_["C"] in grid["C"]
+
+    # _run_grid_search must wire the same grid and surface the same winner.
+    cv_scores, best_params, fitted = _run_grid_search(
+        [("LogisticRegression", LogisticRegression(max_iter=1000, random_state=42))],
+        X, y, cv, "f1_macro",
+    )
+    assert best_params["LogisticRegression"] == reference.best_params_
+    assert fitted["LogisticRegression"] is not None  # refit=True already fit it
+
+
+def test_linear_regression_skips_hyperparameter_grid():
+    """LinearRegression has no grid — it must be plain-CV'd, not GridSearchCV'd,
+    and left unfit for the caller to refit."""
+    from sklearn.model_selection import KFold
+
+    rng = np.random.default_rng(8)
+    n = 100
+    X = pd.DataFrame(rng.standard_normal((n, 3)), columns=["a", "b", "c"])
+    y = pd.Series(X["a"] * 2 + X["b"] + rng.standard_normal(n) * 0.1)
+
+    cv = KFold(n_splits=5, shuffle=True, random_state=42)
+    cv_scores, best_params, fitted = _run_grid_search(
+        [("LinearRegression", LinearRegression())],
+        X, y, cv, "neg_root_mean_squared_error",
+    )
+    assert best_params["LinearRegression"] == {}
+    assert fitted["LinearRegression"] is None
+
+
+def test_agent_e2e_classification_best_hyperparameters_populated(classification_csv):
+    """Every classification candidate has a grid, so whichever model wins
+    must report a non-empty best_hyperparameters dict."""
+    agent = MLAgent()
+    agent.run(classification_csv, target_col="label", id_col="row_id")
+    report = agent.report_
+    assert isinstance(report.best_hyperparameters, dict)
+    assert len(report.best_hyperparameters) > 0
+
+
+def test_agent_e2e_regression_best_hyperparameters(regression_csv):
+    """best_hyperparameters is non-empty when a tuned model wins, and
+    exactly empty when LinearRegression (the only untuned candidate) wins."""
+    agent = MLAgent()
+    agent.run(regression_csv, target_col="price")
+    report = agent.report_
+    if report.best_model_name == "LinearRegression":
+        assert report.best_hyperparameters == {}
+    else:
+        assert len(report.best_hyperparameters) > 0
+
+
+# ---------------------------------------------------------------------------
 # Model selection picks genuinely best CV score
 # ---------------------------------------------------------------------------
 
@@ -255,6 +340,7 @@ def test_agent_e2e_classification(classification_csv, tmp_path):
     assert "cv_scores" in data
     assert "best_model_name" in data
     assert "threshold_metrics" in data
+    assert "best_hyperparameters" in data
 
 
 def test_agent_e2e_classification_threshold_metrics_structure(classification_csv):

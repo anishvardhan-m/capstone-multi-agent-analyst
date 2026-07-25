@@ -66,6 +66,7 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.model_selection import (
+    GridSearchCV,
     KFold,
     StratifiedKFold,
     cross_val_score,
@@ -84,6 +85,17 @@ _THRESHOLD_SWEEP = (0.3, 0.4, 0.5)
 _MODEL_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "models"
 )
+
+# Hyperparameter grids swept via GridSearchCV (handbook Sections 6.5, 10.2).
+# LinearRegression has no entry — it has no hyperparameters worth tuning,
+# so it's cross-validated directly instead of wrapped in GridSearchCV.
+_PARAM_GRIDS: dict[str, dict] = {
+    "LogisticRegression": {"C": [0.01, 0.1, 1, 10]},
+    "RandomForestClassifier": {"n_estimators": [100, 200], "max_depth": [5, 10, None]},
+    "RandomForestRegressor": {"n_estimators": [100, 200], "max_depth": [5, 10, None]},
+    "HistGradientBoostingClassifier": {"max_iter": [100, 200], "learning_rate": [0.05, 0.1]},
+    "HistGradientBoostingRegressor": {"max_iter": [100, 200], "learning_rate": [0.05, 0.1]},
+}
 
 # Runtime detection: class_weight was added to HGBT in sklearn 1.2.
 # Falls back to sample_weight path on older environments.
@@ -105,8 +117,13 @@ class MLReport:
     """Structured, JSON-serializable summary of the ML training run.
 
     cv_scores : dict
-        Maps model name → mean CV score (higher-is-better: F1-macro for
-        classification, negative-RMSE for regression).
+        Maps model name → best CV score from GridSearchCV (higher-is-
+        better: F1-macro for classification, negative-RMSE for
+        regression). LinearRegression has no grid, so its score is a
+        plain (untuned) cross-validation mean.
+    best_hyperparameters : dict
+        The winning model's best_params_ from GridSearchCV. Empty for
+        models with no hyperparameter grid (LinearRegression).
     test_metrics : dict
         Held-out test-set metrics at the default 0.5 threshold.
     threshold_metrics : list[dict] | None
@@ -122,6 +139,7 @@ class MLReport:
     task_type: str
     best_model_name: str
     cv_scores: dict = field(default_factory=dict)
+    best_hyperparameters: dict = field(default_factory=dict)
     test_metrics: dict = field(default_factory=dict)
     confusion_matrix: Optional[list] = None
     threshold_metrics: Optional[list] = None
@@ -132,6 +150,7 @@ class MLReport:
             "task_type": self.task_type,
             "best_model_name": self.best_model_name,
             "cv_scores": self.cv_scores,
+            "best_hyperparameters": self.best_hyperparameters,
             "test_metrics": self.test_metrics,
             "confusion_matrix": self.confusion_matrix,
             "threshold_metrics": self.threshold_metrics,
@@ -171,40 +190,77 @@ def _cv_with_sample_weight(
     return np.array(scores)
 
 
-def _run_cv(
+def _run_grid_search(
     models: list[tuple[str, Any]],
     X_train: pd.DataFrame,
     y_train: pd.Series,
     cv,
     scoring: str,
     sample_weight_models: Optional[set] = None,
-) -> dict[str, float]:
-    """Cross-validate all candidate models and return mean CV scores.
+) -> tuple[dict[str, float], dict[str, dict], dict[str, Any]]:
+    """Tune each candidate model and return per-model best CV scores.
+
+    Models with an entry in _PARAM_GRIDS are wrapped in GridSearchCV
+    (refit=True), so .best_score_ drives model comparison and
+    .best_estimator_ is already fit on the full training set. Models
+    without a grid (LinearRegression) fall back to a plain CV score with
+    no tuning, and are left unfit for the caller to refit if selected.
 
     Parameters
     ----------
     sample_weight_models : set[str] | None
         Model names that require the sample_weight CV path rather than
-        the native class_weight path.
+        the native class_weight path. The balanced sample weight is
+        computed once on the full y_train and passed as a GridSearchCV
+        fit_param, which sklearn slices per-fold automatically.
+
+    Returns
+    -------
+    (cv_scores, best_params, fitted_estimators)
+        fitted_estimators[name] is None for un-tuned models that still
+        need to be refit by the caller.
     """
     cv_scores: dict[str, float] = {}
+    best_params: dict[str, dict] = {}
+    fitted_estimators: dict[str, Any] = {}
     sw_set = sample_weight_models or set()
 
     for name, model in models:
+        fit_kwargs = {}
         if name in sw_set:
-            scores = _cv_with_sample_weight(model, X_train, y_train, cv, scoring)
-        else:
-            scores = cross_val_score(
-                model, X_train, y_train, cv=cv, scoring=scoring, n_jobs=-1
-            )
-        mean_score = round(float(scores.mean()), 6)
-        cv_scores[name] = mean_score
-        logger.info(
-            "CV  %-40s  %s = %.4f (±%.4f)",
-            name, scoring, mean_score, scores.std(),
-        )
+            fit_kwargs["sample_weight"] = compute_sample_weight("balanced", y_train)
 
-    return cv_scores
+        grid = _PARAM_GRIDS.get(name)
+        if grid:
+            search = GridSearchCV(
+                model, grid, cv=cv, scoring=scoring, n_jobs=-1, refit=True
+            )
+            search.fit(X_train, y_train, **fit_kwargs)
+            mean_score = round(float(search.best_score_), 6)
+            cv_scores[name] = mean_score
+            best_params[name] = search.best_params_
+            fitted_estimators[name] = search.best_estimator_
+            logger.info(
+                "GridSearchCV %-40s  best %s = %.4f  best_params=%s",
+                name, scoring, mean_score, search.best_params_,
+            )
+        else:
+            if name in sw_set:
+                scores = _cv_with_sample_weight(model, X_train, y_train, cv, scoring)
+            else:
+                scores = cross_val_score(
+                    model, X_train, y_train, cv=cv, scoring=scoring, n_jobs=-1
+                )
+            mean_score = round(float(scores.mean()), 6)
+            cv_scores[name] = mean_score
+            best_params[name] = {}
+            fitted_estimators[name] = None
+            logger.info(
+                "CV  %-40s  %s = %.4f (±%.4f)  [no hyperparameters to tune]",
+                name, scoring, mean_score, scores.std(),
+            )
+
+    return cv_scores, best_params, fitted_estimators
 
 
 def _extract_feature_importances(
@@ -410,6 +466,10 @@ class MLAgent:
             )
 
         candidates = [
+            # lbfgs's internal line search transiently overflows on rejected
+            # trial steps (RuntimeWarning: overflow/invalid in matmul) — expected
+            # and harmless; verified no NaN/Inf ever lands in coef_ or
+            # predict_proba, and iteration counts stay well under max_iter.
             ("LogisticRegression", LogisticRegression(
                 max_iter=1000, random_state=_RANDOM_STATE, class_weight="balanced"
             )),
@@ -462,26 +522,39 @@ class MLAgent:
             scoring = "neg_root_mean_squared_error"
 
         logger.info(
-            "Running %d-fold CV on %d candidate models (scoring=%s, class_weight=balanced for classifiers)",
+            "Running %d-fold GridSearchCV on %d candidate models "
+            "(scoring=%s, class_weight=balanced for classifiers)",
             _N_CV_SPLITS, len(candidates), scoring,
         )
-        cv_scores = _run_cv(
+        cv_scores, best_params, fitted_estimators = _run_grid_search(
             candidates, X_train, y_train, cv, scoring,
             sample_weight_models=sw_names,
         )
 
         best_name = max(cv_scores, key=cv_scores.__getitem__)
-        best_model = dict(candidates)[best_name]
-        logger.info("Best model: %s (CV score=%.4f)", best_name, cv_scores[best_name])
+        best_hyperparameters = best_params[best_name]
+        logger.info(
+            "Best model: %s (CV score=%.4f)  best_hyperparameters=%s",
+            best_name, cv_scores[best_name], best_hyperparameters,
+        )
 
-        logger.info("Refitting %s on full training set...", best_name)
-        if best_name in sw_names:
-            # sample_weight fallback for HGBT on older sklearn
-            sw = compute_sample_weight("balanced", y_train)
-            best_model.fit(X_train, y_train, sample_weight=sw)
-            logger.info("Fitted with sample_weight (class_weight fallback)")
+        best_model = fitted_estimators[best_name]
+        if best_model is None:
+            # No hyperparameter grid for this model (LinearRegression) —
+            # GridSearchCV never ran, so it still needs an explicit fit.
+            best_model = dict(candidates)[best_name]
+            logger.info("Refitting %s on full training set (no grid)...", best_name)
+            if best_name in sw_names:
+                sw = compute_sample_weight("balanced", y_train)
+                best_model.fit(X_train, y_train, sample_weight=sw)
+                logger.info("Fitted with sample_weight (class_weight fallback)")
+            else:
+                best_model.fit(X_train, y_train)
         else:
-            best_model.fit(X_train, y_train)
+            logger.info(
+                "%s already refit on full training set via GridSearchCV(refit=True)",
+                best_name,
+            )
         self.best_model_ = best_model
 
         os.makedirs(os.path.dirname(model_output_path), exist_ok=True)
@@ -505,6 +578,7 @@ class MLAgent:
                 task_type=task_type,
                 best_model_name=best_name,
                 cv_scores=cv_scores,
+                best_hyperparameters=best_hyperparameters,
                 test_metrics=test_metrics,
                 confusion_matrix=cm,
                 threshold_metrics=threshold_metrics,
@@ -517,6 +591,7 @@ class MLAgent:
                 task_type=task_type,
                 best_model_name=best_name,
                 cv_scores=cv_scores,
+                best_hyperparameters=best_hyperparameters,
                 test_metrics=test_metrics,
                 confusion_matrix=None,
                 threshold_metrics=None,

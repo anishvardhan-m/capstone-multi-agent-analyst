@@ -208,21 +208,23 @@ def test_frequency_encoder_chosen_for_high_cardinality():
     result = encoder.fit_transform(df)
     assert encoder.encoding_map_["city"] == "frequency"
     assert "city" in result.columns
-    assert pd.api.types.is_integer_dtype(result["city"])
+    assert pd.api.types.is_float_dtype(result["city"])
+    # Proportions must land in [0, 1], not raw counts
+    assert result["city"].between(0, 1).all()
 
 
-def test_frequency_encoder_correct_counts():
+def test_frequency_encoder_correct_proportions():
     # 3 unique values, threshold=2 → 3 is NOT < 2 → frequency encoding
     df = pd.DataFrame({"state": ["SP"] * 50 + ["RJ"] * 30 + ["MG"] * 20})
     encoder = CategoricalEncoder(ohe_threshold=2)
     encoder.fit(df)
     result = encoder.transform(df)
     assert encoder.encoding_map_["state"] == "frequency"
-    # SP appears 50 times → should be encoded as 50
+    # SP appears 50/100 times → should be encoded as 0.5
     sp_rows = result.loc[df["state"] == "SP", "state"]
-    assert (sp_rows == 50).all()
+    assert sp_rows.to_numpy() == pytest.approx(0.5)
     rj_rows = result.loc[df["state"] == "RJ", "state"]
-    assert (rj_rows == 30).all()
+    assert rj_rows.to_numpy() == pytest.approx(0.3)
 
 
 def test_ohe_encoder_consistent_columns_on_transform():
@@ -260,7 +262,7 @@ def test_frequency_encoder_maps_unseen_to_zero():
     encoder.fit(train)
     result = encoder.transform(test)
     assert encoder.encoding_map_["city"] == "frequency"
-    assert result["city"].iloc[0] == 2   # SP appears 2 times in train
+    assert result["city"].iloc[0] == pytest.approx(2 / 3)  # SP is 2 of 3 train rows
     assert result["city"].iloc[1] == 0   # unseen → 0
 
 
