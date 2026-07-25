@@ -220,8 +220,12 @@ class CategoricalEncoder(BaseEstimator, TransformerMixin):
       extra dummy columns are created; new-category rows get all zeros for
       that column's dummies).
     - **Frequency encoding**: for columns with cardinality >= `ohe_threshold`.
-      Each category value is replaced with the count of its appearances in
-      the fit data. Values unseen during fit are mapped to 0.
+      Each category value is replaced with the proportion (count / n_rows)
+      of its appearances in the fit data, landing in [0, 1] rather than raw
+      counts — otherwise high-cardinality columns end up on a wildly larger
+      scale than every other feature, which blows up models sensitive to
+      feature scale (e.g. LogisticRegression). Values unseen during fit are
+      mapped to 0.
 
     The original categorical column is dropped and replaced by its encoded
     form.  Protected columns are never encoded.
@@ -267,7 +271,7 @@ class CategoricalEncoder(BaseEstimator, TransformerMixin):
                     "CategoricalEncoder: '%s' → one_hot (%d unique values)", col, n_unique
                 )
             else:
-                self.freq_columns_[col] = X[col].value_counts().to_dict()
+                self.freq_columns_[col] = (X[col].value_counts() / len(X)).to_dict()
                 self.encoding_map_[col] = "frequency"
                 logger.info(
                     "CategoricalEncoder: '%s' → frequency (%d unique values)", col, n_unique
@@ -291,6 +295,6 @@ class CategoricalEncoder(BaseEstimator, TransformerMixin):
         for col, freq_map in self.freq_columns_.items():
             if col not in X_out.columns:
                 continue
-            X_out[col] = X_out[col].map(freq_map).fillna(0).astype(int)
+            X_out[col] = X_out[col].map(freq_map).fillna(0.0).astype(float)
 
         return X_out
