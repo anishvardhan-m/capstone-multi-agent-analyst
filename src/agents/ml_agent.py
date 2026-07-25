@@ -74,6 +74,7 @@ from sklearn.model_selection import (
 )
 from sklearn.utils.class_weight import compute_sample_weight
 
+from src.tools.audit_db import audit_logged
 from src.tools.logging_config import get_agent_logger
 from src.tools.ml_tools import adjusted_r2, detect_task_type
 
@@ -602,6 +603,7 @@ class MLAgent:
     # Public interface
     # ------------------------------------------------------------------
 
+    @audit_logged("MLAgent")
     def run(
         self,
         data_path: str,

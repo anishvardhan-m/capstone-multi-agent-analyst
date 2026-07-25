@@ -41,6 +41,7 @@ from typing import Optional
 import pandas as pd
 from sklearn.pipeline import Pipeline
 
+from src.tools.audit_db import audit_logged
 from src.tools.feature_tools import (
     CategoricalEncoder,
     NumericScaler,
@@ -129,6 +130,7 @@ class FeatureEngineeringAgent:
             ]
         )
 
+    @audit_logged("FeatureEngineeringAgent")
     def run(self, data_path: str, output_path: Optional[str] = None) -> tuple[bool, str]:
         """Run the full feature engineering pipeline on a CSV file.
 

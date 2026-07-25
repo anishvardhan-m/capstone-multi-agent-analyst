@@ -38,6 +38,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
+from src.tools.audit_db import audit_logged
 from src.tools.logging_config import get_agent_logger
 
 logger = get_agent_logger("VisualizationAgent")
@@ -491,6 +492,10 @@ class VisualizationAgent:
     # Public interface
     # ------------------------------------------------------------------
 
+    @audit_logged(
+        "VisualizationAgent",
+        input_arg=("eda_report_path", "ml_report_path", "cleaned_data_path"),
+    )
     def run(
         self,
         eda_report_path: str,

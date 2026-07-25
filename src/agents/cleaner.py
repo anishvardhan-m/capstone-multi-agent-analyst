@@ -28,6 +28,7 @@ from typing import Optional
 import pandas as pd
 from sklearn.pipeline import Pipeline
 
+from src.tools.audit_db import audit_logged
 from src.tools.data_tools import (
     DataTypeCorrector,
     DuplicateRemover,
@@ -115,6 +116,7 @@ class DataCleaningAgent:
             ]
         )
 
+    @audit_logged("DataCleaningAgent")
     def run(self, data_path: str, output_path: Optional[str] = None) -> tuple[bool, str]:
         """Run the full cleaning pipeline on a CSV file.
 

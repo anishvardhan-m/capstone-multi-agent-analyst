@@ -23,6 +23,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from src.tools.audit_db import audit_logged
 from src.tools.logging_config import get_agent_logger
 
 logger = get_agent_logger("EDAAgent")
@@ -166,6 +167,7 @@ class EDAAgent:
     # Public interface
     # ------------------------------------------------------------------
 
+    @audit_logged("EDAAgent")
     def run(self, data_path: str) -> tuple[bool, str]:
         """Run the full EDA suite on a CSV file.
 
