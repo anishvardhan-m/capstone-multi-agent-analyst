@@ -683,7 +683,7 @@ system" for:
   there is no LLM-call failure mode (rate limit, hallucinated output,
   model drift between provider updates) anywhere in the data-processing
   path itself.
-- **Testability.** 369 unit/integration tests exercise agent *behavior*
+- **Testability.** 372 unit/integration tests exercise agent *behavior*
   directly — pipeline branching, threshold edge cases, graceful
   degradation on malformed input — without needing to mock an LLM at
   every layer or accept flaky, non-deterministic test assertions.
