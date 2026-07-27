@@ -513,17 +513,39 @@ class OrchestratorAgent:
 
 
 if __name__ == "__main__":
+    import argparse
     import json
     import sys
 
+    parser = argparse.ArgumentParser(
+        description="Run the full 7-agent pipeline end to end on any "
+        "classification/regression CSV.",
+    )
+    parser.add_argument("data_path", help="Path to the raw input CSV.")
+    parser.add_argument("target_col", help="Column MLAgent should predict.")
+    parser.add_argument(
+        "--id-col", default=None,
+        help="Row-identifier column, excluded from ML features.",
+    )
+    parser.add_argument(
+        "--group-col", default=None,
+        help="Column identifying rows belonging to the same real-world "
+        "entity, for leakage-safe grouped train/test splitting.",
+    )
+    parser.add_argument("--positive-label", default=None)
+    parser.add_argument("--negative-label", default=None)
+    parser.add_argument("--unit-label", default=None)
+    args = parser.parse_args()
+
     agent = OrchestratorAgent()
     success, result = agent.run(
-        data_path="data/processed/olist_flattened.csv",
-        target_col="is_late_delivery",
-        group_col="customer_unique_id",
-        positive_label="late delivery",
-        negative_label="on-time delivery",
-        unit_label="order",
+        data_path=args.data_path,
+        target_col=args.target_col,
+        id_col=args.id_col,
+        group_col=args.group_col,
+        positive_label=args.positive_label,
+        negative_label=args.negative_label,
+        unit_label=args.unit_label,
     )
     print(json.dumps(agent.report_.to_dict(), indent=2))
     if success:
