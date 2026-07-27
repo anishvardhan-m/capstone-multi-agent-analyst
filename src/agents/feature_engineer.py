@@ -43,6 +43,7 @@ from sklearn.pipeline import Pipeline
 
 from src.tools.audit_db import audit_logged
 from src.tools.feature_tools import (
+    PROTECTED_COLS,
     CategoricalEncoder,
     NumericScaler,
     RedundantFeatureDropper,
@@ -100,6 +101,16 @@ class FeatureEngineeringAgent:
         Categorical columns with fewer unique values than this receive
         one-hot encoding; higher-cardinality columns get frequency encoding
         (default 20).
+    extra_protected_cols : list[str] | None
+        Additional columns (beyond feature_tools.PROTECTED_COLS' generic
+        "is_late_delivery"/"order_id" defaults) to pass through every
+        transformer completely unmodified. Used for a caller-supplied
+        grouping column (e.g. a repeat-customer identifier the ML Agent
+        needs later to group-split train/test) -- without this, a
+        high-cardinality ID column would get frequency-encoded into a
+        count/proportion, destroying the true identity values grouping
+        needs and quietly turning "how many total orders will this
+        customer place" (a future-information leak) into a model feature.
     """
 
     def __init__(
@@ -107,25 +118,31 @@ class FeatureEngineeringAgent:
         corr_threshold: float = 0.95,
         skew_threshold: float = 1.0,
         ohe_threshold: int = 20,
+        extra_protected_cols: Optional[list[str]] = None,
     ):
         self.corr_threshold = corr_threshold
         self.skew_threshold = skew_threshold
         self.ohe_threshold = ohe_threshold
+        self.extra_protected_cols = extra_protected_cols
         self.report_: Optional[FeatureEngineeringReport] = None
         self._pipeline: Optional[Pipeline] = None
 
+    def _protected_cols(self) -> list[str]:
+        return sorted(PROTECTED_COLS | set(self.extra_protected_cols or []))
+
     def _build_pipeline(self) -> Pipeline:
+        protected = self._protected_cols()
         return Pipeline(
             steps=[
                 ("redundant_dropper", RedundantFeatureDropper(
-                    threshold=self.corr_threshold,
+                    threshold=self.corr_threshold, protected_cols=protected,
                 )),
                 ("skewness_reducer", SkewnessReducer(
-                    skew_threshold=self.skew_threshold,
+                    skew_threshold=self.skew_threshold, protected_cols=protected,
                 )),
-                ("numeric_scaler", NumericScaler()),
+                ("numeric_scaler", NumericScaler(protected_cols=protected)),
                 ("categorical_encoder", CategoricalEncoder(
-                    ohe_threshold=self.ohe_threshold,
+                    ohe_threshold=self.ohe_threshold, protected_cols=protected,
                 )),
             ]
         )
@@ -170,12 +187,10 @@ class FeatureEngineeringAgent:
         scaler = self._pipeline.named_steps["numeric_scaler"]
         encoder = self._pipeline.named_steps["categorical_encoder"]
 
-        from src.tools.feature_tools import PROTECTED_COLS
-
         self.report_ = FeatureEngineeringReport(
             input_shape=input_shape,
             output_shape=engineered_df.shape,
-            protected_columns=sorted(PROTECTED_COLS),
+            protected_columns=self._protected_cols(),
             redundant_columns_dropped=dropper.dropped_columns_,
             log_transformed_columns=reducer.log_transformed_columns_,
             scaled_columns=scaler.scaled_columns_,

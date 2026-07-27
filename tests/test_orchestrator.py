@@ -124,6 +124,43 @@ def test_happy_path_all_seven_steps_succeed(patched_agents):
     assert report_kwargs["chart_paths"] == ["chart1.png", "chart2.png"]
 
 
+def test_happy_path_threads_group_col_into_fe_and_ml(patched_agents):
+    """F1: group_col must reach FeatureEngineeringAgent (as an extra
+    protected column, so it survives feature engineering untouched) and
+    MLAgent (to drive the grouped train/test split). target_col must
+    ALWAYS be protected too, group_col or not (see the genericity fix
+    below) -- feature_tools.PROTECTED_COLS' own defaults are Olist-
+    specific ("is_late_delivery"), so without this, any other dataset's
+    target column would be silently transformed like any other feature."""
+    with patch("src.agents.orchestrator.FeatureEngineeringAgent") as fe_cls, \
+         patch("src.agents.orchestrator.MLAgent") as ml_cls:
+        fe_cls.return_value.run.return_value = (True, "data/processed/x_features.csv")
+        ml_cls.return_value.run.return_value = (True, "data/processed/x_ml_report.json")
+
+        agent = OrchestratorAgent(client=MagicMock())
+        agent.run(
+            data_path="raw.csv", target_col="target", group_col="customer_unique_id",
+        )
+
+        assert set(fe_cls.call_args.kwargs["extra_protected_cols"]) == {"target", "customer_unique_id"}
+        _, ml_kwargs = ml_cls.return_value.run.call_args
+        assert ml_kwargs["group_col"] == "customer_unique_id"
+
+
+def test_happy_path_no_group_col_still_protects_target_col(patched_agents):
+    with patch("src.agents.orchestrator.FeatureEngineeringAgent") as fe_cls, \
+         patch("src.agents.orchestrator.MLAgent") as ml_cls:
+        fe_cls.return_value.run.return_value = (True, "data/processed/x_features.csv")
+        ml_cls.return_value.run.return_value = (True, "data/processed/x_ml_report.json")
+
+        agent = OrchestratorAgent(client=MagicMock())
+        agent.run(data_path="raw.csv", target_col="target")
+
+        assert fe_cls.call_args.kwargs["extra_protected_cols"] == ["target"]
+        _, ml_kwargs = ml_cls.return_value.run.call_args
+        assert ml_kwargs["group_col"] is None
+
+
 def test_happy_path_threads_labels_into_viz_and_insights(patched_agents):
     with patch("src.agents.orchestrator.VisualizationAgent") as viz_cls, \
          patch("src.agents.orchestrator.BusinessInsightsAgent") as insights_cls:

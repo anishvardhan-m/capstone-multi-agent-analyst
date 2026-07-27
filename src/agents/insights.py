@@ -80,6 +80,40 @@ _DEFAULT_NEGATIVE_LABEL = "negative case"
 # isn't actually predictive.
 _IMPORTANCE_MATERIALITY_THRESHOLD = 0.01
 
+# Segment-level error concentration (handbook F6) is an association
+# observed in this held-out test set, not evidence of what causes a
+# segment to differ -- e.g. a state with an elevated false-negative rate
+# might differ in shipping distance, carrier mix, warehouse location, or
+# something the data doesn't capture at all. This hedge (handbook F8's
+# association-not-causation convention) is repeated in both the prompt
+# instructions and the raw data line so the LLM can't miss it either way.
+_ERROR_CONCENTRATION_HEDGE = (
+    "an association observed in this held-out test set, not a causal "
+    "claim about why the segment differs"
+)
+
+# handbook F8: the association-not-causation rule generalized to the
+# WHOLE narrative, not just error-analysis segments. Feature importance,
+# EDA correlations, and error concentration are all the same kind of
+# claim -- "X and Y move together in this data" -- and none of them come
+# from a controlled experiment. Repeated as its own explicit instruction
+# (on top of the section-specific hedges already in each prompt) because
+# an LLM given permission to sound authoritative in one section tends to
+# drift into causal phrasing in the next one otherwise.
+_CAUSAL_LANGUAGE_GUARDRAIL = (
+    "IMPORTANT -- causal language: this entire analysis is observational, "
+    "not experimental. Every figure below (feature importance, "
+    "correlations, error-rate-by-segment) describes an association the "
+    "model or the data found, never a proven cause-and-effect "
+    "relationship. Never use causal language anywhere in the narrative -- "
+    "words and phrases like 'causes', 'leads to', 'results in', "
+    "'because', 'due to', 'the reason is', or 'drives' claim a controlled "
+    "experiment this analysis never ran. Use associative language "
+    "instead: 'is associated with', 'correlates with', 'tends to occur "
+    "alongside', 'is linked to'. This rule applies to every section of "
+    "the narrative, not just feature importance or error analysis."
+)
+
 
 # ---------------------------------------------------------------------------
 # Report dataclass
@@ -181,28 +215,114 @@ def _format_feature_importance_lines(importances: dict) -> list[str]:
     """Render feature importances filtered to those above materiality.
 
     Shared by the classification and regression summaries so both apply
-    the exact same noise filter.
+    the exact same noise filter. Each entry is a permutation-importance
+    {"importance_mean", "importance_std", "distinguishable_from_zero"}
+    dict (see MLReport.feature_importances) rather than a single point
+    estimate, so both numbers -- plus the zero-crossing flag -- are
+    surfaced to the LLM instead of just the mean.
     """
     lines: list[str] = []
     material = [
         (f, v) for f, v in importances.items()
-        if abs(v) > _IMPORTANCE_MATERIALITY_THRESHOLD
+        if abs(v["importance_mean"]) > _IMPORTANCE_MATERIALITY_THRESHOLD
     ]
     if material:
-        material.sort(key=lambda x: x[1], reverse=True)
+        material.sort(key=lambda x: x[1]["importance_mean"], reverse=True)
         material = material[:8]
         lines.append(
-            f"- Top features by importance (only features with importance > "
-            f"{_IMPORTANCE_MATERIALITY_THRESHOLD} are shown -- every other "
-            f"feature the model saw was statistical noise, not a real driver):"
+            f"- Top features by importance (only features with |mean "
+            f"importance| > {_IMPORTANCE_MATERIALITY_THRESHOLD} are shown -- "
+            f"every other feature the model saw was statistical noise, not a "
+            f"real driver). Value shown is mean ± std across repeated "
+            f"permutations; features flagged NOT DISTINGUISHABLE FROM ZERO "
+            f"have a mean ± std range that spans zero, meaning this run "
+            f"cannot rule out that their true effect is none:"
         )
-        for feat, val in material:
-            lines.append(f"    {feat}: {val:.4f}")
+        for feat, v in material:
+            flag = (
+                "" if v["distinguishable_from_zero"]
+                else " -- NOT DISTINGUISHABLE FROM ZERO"
+            )
+            lines.append(
+                f"    {feat}: {v['importance_mean']:.4f} ± "
+                f"{v['importance_std']:.4f}{flag}"
+            )
     elif importances:
         lines.append(
             f"- No feature cleared the {_IMPORTANCE_MATERIALITY_THRESHOLD} "
             f"importance materiality threshold -- treat this model as not "
             f"having an identifiable dominant driver."
+        )
+    return lines
+
+
+_ERROR_ANALYSIS_FLAG_METRIC = {
+    "elevated_false_negative_rate": "false_negative_rate",
+    "elevated_false_positive_rate": "false_positive_rate",
+    "elevated_misclassification_rate": "misclassification_rate",
+    "elevated_mae": "mae",
+    "elevated_bias": "mean_error",
+}
+
+
+def _format_error_analysis_lines(error_analysis: dict) -> list[str]:
+    """Render error-analysis-by-segment findings (handbook F6) as plain
+    text, always hedged as an association rather than a causal claim
+    (handbook F8 convention -- see _ERROR_CONCENTRATION_HEDGE). Shared by
+    the classification and regression summaries.
+
+    A dataset can have many more flagged segments than fit in a prompt, so
+    only the top 8 are shown -- ranked by how far each flagged metric
+    deviates from the overall value, not by iteration order. Without this,
+    truncation silently keeps whichever segments happen to sort first
+    (e.g. by segment value) and can drop the single most dramatic finding.
+    """
+    if not error_analysis:
+        return []
+
+    task_type = error_analysis.get("task_type", "binary_classification")
+    segments = error_analysis.get("segments") or {}
+    overall = error_analysis.get("overall") or {}
+
+    elevated: list[tuple[str, dict, list[str], float]] = []
+    for col, rows in segments.items():
+        for row in rows:
+            flags = [k for k, v in row.items() if k.startswith("elevated_") and v]
+            if not flags:
+                continue
+            excess = 0.0
+            for flag in flags:
+                metric_key = _ERROR_ANALYSIS_FLAG_METRIC.get(flag)
+                seg_val, overall_val = row.get(metric_key), overall.get(metric_key)
+                if seg_val is not None and overall_val is not None:
+                    excess = max(excess, abs(seg_val - overall_val))
+            elevated.append((col, row, flags, excess))
+
+    if not elevated:
+        return [
+            "- Error analysis by segment: no segment showed an error rate "
+            "meaningfully concentrated above the overall rate -- errors "
+            "appear evenly spread, not concentrated in any particular "
+            "segment."
+        ]
+
+    elevated.sort(key=lambda item: item[3], reverse=True)
+
+    lines = [f"- Error analysis by segment ({_ERROR_CONCENTRATION_HEDGE}):"]
+    for col, row, flags, _excess in elevated[:8]:
+        flag_desc = ", ".join(f.replace("elevated_", "").replace("_", " ") for f in flags)
+        if task_type == "regression":
+            detail = f"mae={row['mae']:.3f}, mean_error={row['mean_error']:.3f}"
+        else:
+            parts = []
+            if row.get("false_negative_rate") is not None:
+                parts.append(f"false_negative_rate={row['false_negative_rate']:.3f}")
+            if row.get("false_positive_rate") is not None:
+                parts.append(f"false_positive_rate={row['false_positive_rate']:.3f}")
+            detail = ", ".join(parts)
+        lines.append(
+            f"    {col}={row['segment_value']} (n={row['n']}): "
+            f"{detail} -- elevated {flag_desc}"
         )
     return lines
 
@@ -227,6 +347,28 @@ def _accuracy_from_confusion_matrix(cm: Optional[list]) -> Optional[float]:
         return None
     correct = sum(cm[i][i] for i in range(len(cm)))
     return correct / total
+
+
+def _majority_baseline_accuracy(cm: Optional[list]) -> Optional[float]:
+    """Accuracy a trivial classifier gets by always predicting whichever
+    actual class is most common in the confusion matrix (handbook F8).
+
+    Computed here, not left for the LLM to reason about, for the same
+    reason as _accuracy_from_confusion_matrix: on an imbalanced target
+    (e.g. this project's ~8% late-delivery rate) a headline accuracy
+    number can sound impressive while actually being WORSE than doing
+    nothing -- this project's class_weight='balanced' models trade
+    exactly that: lower raw accuracy for better minority-class recall.
+    Without this baseline in the prompt, an LLM has no way to catch that
+    tradeoff and will present accuracy as an unqualified win.
+    """
+    if not cm:
+        return None
+    row_totals = [sum(row) for row in cm]
+    total = sum(row_totals)
+    if total == 0:
+        return None
+    return max(row_totals) / total
 
 
 def _confusion_breakdown(
@@ -277,6 +419,19 @@ def _format_ml_summary_classification(
             f"- OVERALL ACCURACY (fraction of all predictions that were "
             f"correct, computed from the confusion matrix): {accuracy:.1%}"
         )
+        baseline = _majority_baseline_accuracy(cm)
+        if baseline is not None:
+            comparison = (
+                "is BELOW this trivial baseline" if accuracy < baseline
+                else "beats this trivial baseline"
+            )
+            lines.append(
+                f"- MAJORITY-CLASS BASELINE ACCURACY (what a trivial model "
+                f"that always predicts '{negative_label}' -- the more "
+                f"common outcome -- would score, with zero actual "
+                f"predictive skill): {baseline:.1%}. The model's OVERALL "
+                f"ACCURACY {comparison} ({accuracy:.1%} vs. {baseline:.1%})."
+            )
     if "roc_auc" in test_metrics:
         lines.append(
             f"- ROC-AUC (a separate ranking/separability metric -- this is "
@@ -295,6 +450,7 @@ def _format_ml_summary_classification(
             lines.append(f"- That confusion matrix, spelled out in plain terms:\n{breakdown}")
 
     lines.extend(_format_feature_importance_lines(ml.get("feature_importances") or {}))
+    lines.extend(_format_error_analysis_lines(ml.get("error_analysis") or {}))
 
     thresholds = ml.get("threshold_metrics")
     if thresholds:
@@ -335,7 +491,20 @@ def _build_classification_prompt(
         f"'positive event', or 'the target'. Do NOT pluralize "
         f"'{positive_label}' by simply appending 's' if that would produce "
         f"an awkward or incorrect plural -- write 'cases of {positive_label}' "
-        f"or 'instances of {positive_label}' instead.\n\n"
+        f"or 'instances of {positive_label}' instead. Whenever you state "
+        f"OVERALL ACCURACY, you must also state the MAJORITY-CLASS BASELINE "
+        f"ACCURACY figure below in the same sentence or the next one, and "
+        f"say explicitly whether the model's accuracy is above or below "
+        f"it -- never present OVERALL ACCURACY alone as if a high-sounding "
+        f"percentage were automatically good news. If OVERALL ACCURACY is "
+        f"below the baseline, say so plainly and explain that this is the "
+        f"expected tradeoff of correcting for class imbalance (the model "
+        f"gives up raw accuracy to catch more actual cases of "
+        f"{positive_label}, which a naive always-guess-{negative_label} "
+        f"baseline never attempts) -- do not describe it as a flaw or "
+        f"failure without that context, and do not omit the comparison "
+        f"just because it complicates an otherwise clean-sounding number."
+        f"\n\n"
         "## What Matters Most\n"
         f"Which factors matter most for predicting a {positive_label} and "
         f"why, explained in business terms (not statistical jargon), "
@@ -349,7 +518,17 @@ def _build_classification_prompt(
         f"own general knowledge of the dataset) -- a near-zero importance "
         f"means the model found no real signal there, so inventing a "
         f"reason for it is not supported by the data and must not appear "
-        f"in the narrative.\n\n"
+        f"in the narrative. Likewise, never build a claim around a feature "
+        f"marked NOT DISTINGUISHABLE FROM ZERO -- its mean ± std range spans "
+        f"zero, so this run cannot rule out that it has no real effect at "
+        f"all. Then, using only the 'Error analysis by segment' data below, "
+        f"add 1-2 sentences on whether the model's mistakes concentrate in "
+        f"any particular segment (e.g. an elevated false-negative or "
+        f"false-positive rate). This is {_ERROR_CONCENTRATION_HEDGE} -- "
+        f"state it as an observed pattern in this held-out test set, never "
+        f"as a reason or explanation, and do not speculate about what "
+        f"causes the segment to differ. If no segment showed a meaningfully "
+        f"elevated rate, say so plainly instead of inventing one.\n\n"
         "## Recommendations\n"
         f"2-3 concrete, actionable recommendations for handling cases of "
         f"{positive_label}. Each must be tied directly to the specific "
@@ -363,7 +542,11 @@ def _build_classification_prompt(
         "number explicitly labeled OVERALL ACCURACY. When you describe the "
         "model's ability to rank/separate the two classes, use only the "
         "number explicitly labeled ROC-AUC, and name it as ROC-AUC, not "
-        "accuracy.\n\n"
+        "accuracy. OVERALL ACCURACY must never be reported without also "
+        "naming the MAJORITY-CLASS BASELINE ACCURACY figure and stating "
+        "whether the model beat it -- an accuracy number with no baseline "
+        "is meaningless on an imbalanced target like this one.\n\n"
+        f"{_CAUSAL_LANGUAGE_GUARDRAIL}\n\n"
         "=== EXPLORATORY DATA ANALYSIS ===\n"
         f"{eda_summary}\n\n"
         "=== MODEL RESULTS ===\n"
@@ -414,6 +597,7 @@ def _format_ml_summary_regression(ml: dict, unit_label: str) -> str:
         )
 
     lines.extend(_format_feature_importance_lines(ml.get("feature_importances") or {}))
+    lines.extend(_format_error_analysis_lines(ml.get("error_analysis") or {}))
 
     return "\n".join(lines) if lines else "(no ML summary available)"
 
@@ -445,7 +629,17 @@ def _build_regression_prompt(eda_summary: str, ml_summary: str, unit_label: str)
         f"feature with a near-zero importance value, even if you see it "
         f"elsewhere or from your own general knowledge of the dataset -- a "
         f"near-zero importance means the model found no real signal "
-        f"there.\n\n"
+        f"there. Likewise, never build a claim around a feature marked NOT "
+        f"DISTINGUISHABLE FROM ZERO -- its mean ± std range spans zero, so "
+        f"this run cannot rule out that it has no real effect at all. Then, "
+        f"using only the 'Error analysis by segment' data below, add 1-2 "
+        f"sentences on whether prediction error (MAE) or systematic "
+        f"over/under-prediction (mean_error) concentrates in any particular "
+        f"segment. This is {_ERROR_CONCENTRATION_HEDGE} -- state it as an "
+        f"observed pattern in this held-out test set, never as a reason or "
+        f"explanation, and do not speculate about what causes the segment "
+        f"to differ. If no segment showed a meaningfully elevated error, "
+        f"say so plainly instead of inventing one.\n\n"
         "## Recommendations\n"
         f"2-3 concrete, actionable recommendations. Each must be tied "
         f"directly to the practical size of the prediction error -- use "
@@ -456,6 +650,7 @@ def _build_regression_prompt(eda_summary: str, ml_summary: str, unit_label: str)
         f"model's number vs. seek a human estimate). Do NOT phrase any "
         f"recommendation in terms of decision thresholds, precision, or "
         f"recall -- those concepts don't apply to a regression model.\n\n"
+        f"{_CAUSAL_LANGUAGE_GUARDRAIL}\n\n"
         "=== EXPLORATORY DATA ANALYSIS ===\n"
         f"{eda_summary}\n\n"
         "=== MODEL RESULTS ===\n"

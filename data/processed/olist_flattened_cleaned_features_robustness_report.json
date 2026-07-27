@@ -1,0 +1,141 @@
+{
+  "task_type": "binary_classification",
+  "n_seeds": 5,
+  "seeds": [
+    42,
+    7,
+    123,
+    2024,
+    99
+  ],
+  "best_model_by_seed": {
+    "42": "HistGradientBoostingClassifier",
+    "7": "HistGradientBoostingClassifier",
+    "123": "HistGradientBoostingClassifier",
+    "2024": "HistGradientBoostingClassifier",
+    "99": "HistGradientBoostingClassifier"
+  },
+  "model_agreement": {
+    "HistGradientBoostingClassifier": 5
+  },
+  "winning_model": "HistGradientBoostingClassifier",
+  "winning_model_seed_agreement": 5,
+  "winning_model_is_robust": true,
+  "test_metrics_by_seed": {
+    "42": {
+      "f1_macro": 0.574479,
+      "precision_macro": 0.578465,
+      "recall_macro": 0.708558,
+      "roc_auc": 0.780713
+    },
+    "7": {
+      "f1_macro": 0.563314,
+      "precision_macro": 0.574255,
+      "recall_macro": 0.712326,
+      "roc_auc": 0.777448
+    },
+    "123": {
+      "f1_macro": 0.566755,
+      "precision_macro": 0.574007,
+      "recall_macro": 0.70662,
+      "roc_auc": 0.777242
+    },
+    "2024": {
+      "f1_macro": 0.574218,
+      "precision_macro": 0.577637,
+      "recall_macro": 0.701388,
+      "roc_auc": 0.768585
+    },
+    "99": {
+      "f1_macro": 0.565865,
+      "precision_macro": 0.572901,
+      "recall_macro": 0.698379,
+      "roc_auc": 0.771444
+    }
+  },
+  "test_metrics_summary": {
+    "f1_macro": {
+      "mean": 0.568926,
+      "std": 0.00457,
+      "min": 0.563314,
+      "max": 0.574479
+    },
+    "precision_macro": {
+      "mean": 0.575453,
+      "std": 0.002185,
+      "min": 0.572901,
+      "max": 0.578465
+    },
+    "recall_macro": {
+      "mean": 0.705454,
+      "std": 0.004996,
+      "min": 0.698379,
+      "max": 0.712326
+    },
+    "roc_auc": {
+      "mean": 0.775086,
+      "std": 0.004414,
+      "min": 0.768585,
+      "max": 0.780713
+    }
+  },
+  "top_k_features": 5,
+  "top_features_by_seed": {
+    "42": [
+      "customer_state",
+      "order_estimated_delivery_date",
+      "purchase_to_estimated_days",
+      "customer_zip_code_prefix",
+      "customer_city"
+    ],
+    "7": [
+      "customer_state",
+      "order_estimated_delivery_date",
+      "purchase_to_estimated_days",
+      "customer_zip_code_prefix",
+      "customer_city"
+    ],
+    "123": [
+      "purchase_to_estimated_days",
+      "order_estimated_delivery_date",
+      "customer_zip_code_prefix",
+      "customer_city",
+      "primary_seller_state"
+    ],
+    "2024": [
+      "order_estimated_delivery_date",
+      "purchase_to_estimated_days",
+      "customer_zip_code_prefix",
+      "customer_state",
+      "primary_seller_state"
+    ],
+    "99": [
+      "purchase_to_estimated_days",
+      "order_estimated_delivery_date",
+      "customer_state",
+      "customer_zip_code_prefix",
+      "customer_city"
+    ]
+  },
+  "feature_appearance_counts": {
+    "customer_state": 4,
+    "order_estimated_delivery_date": 5,
+    "purchase_to_estimated_days": 5,
+    "customer_zip_code_prefix": 5,
+    "customer_city": 4,
+    "primary_seller_state": 2
+  },
+  "always_in_top_k_features": [
+    "customer_zip_code_prefix",
+    "order_estimated_delivery_date",
+    "purchase_to_estimated_days"
+  ],
+  "seed_dependent_features": [
+    "customer_city",
+    "customer_state",
+    "primary_seller_state"
+  ],
+  "note": "Full pipeline (split, model selection, refit, permutation importance) re-run under 5 different random seeds [42, 7, 123, 2024, 99]. winning_model_is_robust=False means the best model changed across seeds -- the single-seed report's 'best model' claim should be treated as seed-sensitive, not a settled fact. seed_dependent_features cleared the top-5 in some seeds but not all -- their apparent importance may partly reflect this run's particular train/test split and CV folds rather than a stable signal.",
+  "failed_seeds": [],
+  "n_seeds_attempted": 5
+}

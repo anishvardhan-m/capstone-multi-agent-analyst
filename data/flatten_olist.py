@@ -36,6 +36,20 @@ label or for audit purposes, never passed to the model):
   - order_delivered_carrier_date     (only known once already shipped)
   - order_delivered_customer_date    (this IS the outcome -- used only
                                        to compute the label)
+  - order_status                     (describes the order's post-purchase
+                                       lifecycle state, not something known
+                                       at checkout. In this snapshot it's
+                                       99.99% "delivered" -- since only
+                                       delivered orders keep a row here --
+                                       so it currently carries no signal and
+                                       DataCleaningAgent's low-variance
+                                       dropper happens to remove it anyway.
+                                       But that's an accident of this one
+                                       dataset's distribution, not a
+                                       deliberate policy -- excluded here
+                                       explicitly so the leakage-free
+                                       contract doesn't depend on a
+                                       variance threshold.)
 
 Kept as legitimate purchase-time features:
   - order_purchase_timestamp, order_estimated_delivery_date (both known
@@ -165,6 +179,7 @@ def build_flat_dataset():
         "order_approved_at",
         "order_delivered_carrier_date",
         "order_delivered_customer_date",  # outcome itself, only used for label above
+        "order_status",  # post-purchase lifecycle state, not known at checkout
     ]
     modeling_df = full_delivered_df.drop(
         columns=[c for c in leaky_or_id_cols if c in full_delivered_df.columns]

@@ -23,8 +23,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.agents.insights import (
     _PRIMARY_MODEL,
     _FALLBACK_MODEL,
+    _CAUSAL_LANGUAGE_GUARDRAIL,
+    _ERROR_CONCENTRATION_HEDGE,
     BusinessInsightsAgent,
+    _accuracy_from_confusion_matrix,
     _build_prompt,
+    _format_error_analysis_lines,
+    _majority_baseline_accuracy,
 )
 
 
@@ -73,14 +78,38 @@ def ml_report() -> dict:
             {"threshold": 0.5, "f1_macro": 0.56731, "precision_minority": 0.187787, "recall_minority": 0.652396},
         ],
         "feature_importances": {
-            "customer_state": 0.0476,
-            "order_estimated_delivery_date": 0.0292,
-            "purchase_to_estimated_days": 0.0212,
+            "customer_state": {
+                "importance_mean": 0.0476, "importance_std": 0.0060,
+                "distinguishable_from_zero": True,
+            },
+            "order_estimated_delivery_date": {
+                "importance_mean": 0.0292, "importance_std": 0.0040,
+                "distinguishable_from_zero": True,
+            },
+            "purchase_to_estimated_days": {
+                "importance_mean": 0.0212, "importance_std": 0.0030,
+                "distinguishable_from_zero": True,
+            },
+            # Above materiality but its mean +/- std range spans zero --
+            # must surface with the "NOT DISTINGUISHABLE FROM ZERO" flag.
+            "delivery_zone_mismatch": {
+                "importance_mean": 0.0150, "importance_std": 0.0200,
+                "distinguishable_from_zero": False,
+            },
             # Near-zero/noise features -- below the 0.01 materiality
             # threshold -- must never surface in the prompt's feature list.
-            "customer_unique_id": 0.0004,
-            "n_distinct_products": 0.0,
-            "primary_seller_state": -0.0002,
+            "customer_unique_id": {
+                "importance_mean": 0.0004, "importance_std": 0.0010,
+                "distinguishable_from_zero": False,
+            },
+            "n_distinct_products": {
+                "importance_mean": 0.0, "importance_std": 0.0005,
+                "distinguishable_from_zero": False,
+            },
+            "primary_seller_state": {
+                "importance_mean": -0.0002, "importance_std": 0.0008,
+                "distinguishable_from_zero": False,
+            },
         },
     }
 
@@ -130,12 +159,27 @@ def regression_ml_report() -> dict:
         "confusion_matrix": None,
         "threshold_metrics": None,
         "feature_importances": {
-            "square_footage": 0.42,
-            "num_bedrooms": 0.18,
-            "lot_size": 0.015,
+            "square_footage": {
+                "importance_mean": 0.42, "importance_std": 0.05,
+                "distinguishable_from_zero": True,
+            },
+            "num_bedrooms": {
+                "importance_mean": 0.18, "importance_std": 0.03,
+                "distinguishable_from_zero": True,
+            },
+            "lot_size": {
+                "importance_mean": 0.015, "importance_std": 0.004,
+                "distinguishable_from_zero": True,
+            },
             # Near-zero/noise features -- must be filtered out here too.
-            "year_built": 0.0006,
-            "has_garage": 0.0,
+            "year_built": {
+                "importance_mean": 0.0006, "importance_std": 0.001,
+                "distinguishable_from_zero": False,
+            },
+            "has_garage": {
+                "importance_mean": 0.0, "importance_std": 0.0005,
+                "distinguishable_from_zero": False,
+            },
         },
     }
 
@@ -309,6 +353,167 @@ def test_prompt_excludes_near_zero_importance_features(eda_report, ml_report):
     assert "not supported by the" in prompt
 
 
+def test_prompt_flags_material_but_statistically_indistinguishable_feature(eda_report, ml_report):
+    """delivery_zone_mismatch clears the 0.01 materiality threshold (mean
+    0.015) but its mean +/- std range spans zero -- it must still surface
+    in the feature list (materiality only filters on the mean), tagged so
+    the LLM knows not to build a business claim around it, and the prompt
+    must forbid doing so."""
+    prompt = _build_prompt(eda_report, ml_report)
+
+    assert "delivery_zone_mismatch: 0.0150" in prompt
+    assert "NOT DISTINGUISHABLE FROM ZERO" in prompt
+
+    # A genuinely material, distinguishable feature must NOT be flagged.
+    customer_state_line = next(
+        line for line in prompt.splitlines() if line.strip().startswith("customer_state:")
+    )
+    assert "NOT DISTINGUISHABLE FROM ZERO" not in customer_state_line
+
+    assert "never build a claim around a feature marked NOT DISTINGUISHABLE FROM ZERO" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Error analysis by segment (handbook F6/F8): hedged association language
+# ---------------------------------------------------------------------------
+
+def test_format_error_analysis_lines_empty_dict_returns_no_lines():
+    assert _format_error_analysis_lines({}) == []
+
+
+def test_format_error_analysis_lines_states_evenly_spread_when_nothing_elevated():
+    error_analysis = {
+        "task_type": "binary_classification",
+        "segments": {
+            "region": [
+                {"segment_value": 0.1, "n": 50, "false_negative_rate": 0.3,
+                 "false_positive_rate": 0.2, "elevated_false_negative_rate": False,
+                 "elevated_false_positive_rate": False},
+            ],
+        },
+    }
+    lines = _format_error_analysis_lines(error_analysis)
+    assert len(lines) == 1
+    assert "evenly spread" in lines[0]
+
+
+def test_format_error_analysis_lines_classification_includes_hedge_and_rates():
+    error_analysis = {
+        "task_type": "binary_classification",
+        "segments": {
+            "region": [
+                {"segment_value": 0.42, "n": 200, "false_negative_rate": 0.55,
+                 "false_positive_rate": 0.1, "elevated_false_negative_rate": True,
+                 "elevated_false_positive_rate": False},
+            ],
+        },
+    }
+    lines = _format_error_analysis_lines(error_analysis)
+    joined = "\n".join(lines)
+    assert _ERROR_CONCENTRATION_HEDGE in joined
+    assert "region=0.42" in joined
+    assert "n=200" in joined
+    assert "false_negative_rate=0.550" in joined
+    assert "elevated false negative rate" in joined
+
+
+def test_format_error_analysis_lines_regression_uses_mae_and_mean_error():
+    error_analysis = {
+        "task_type": "regression",
+        "segments": {
+            "zone": [
+                {"segment_value": 0.9, "n": 100, "mae": 25.0, "mean_error": 15.0,
+                 "elevated_mae": True, "elevated_bias": True},
+            ],
+        },
+    }
+    lines = _format_error_analysis_lines(error_analysis)
+    joined = "\n".join(lines)
+    assert "mae=25.000" in joined
+    assert "mean_error=15.000" in joined
+    assert "elevated mae, bias" in joined
+
+
+def test_format_error_analysis_lines_generic_over_arbitrary_column_and_values():
+    """Non-Olist column name, string segment value -- must render the same way."""
+    error_analysis = {
+        "task_type": "binary_classification",
+        "segments": {
+            "shipping_carrier": [
+                {"segment_value": "carrier_y", "n": 80, "false_negative_rate": 0.6,
+                 "false_positive_rate": 0.1, "elevated_false_negative_rate": True,
+                 "elevated_false_positive_rate": False},
+            ],
+        },
+    }
+    lines = _format_error_analysis_lines(error_analysis)
+    assert "shipping_carrier=carrier_y" in "\n".join(lines)
+
+
+@pytest.fixture
+def ml_report_with_error_analysis(ml_report) -> dict:
+    report = dict(ml_report)
+    report["error_analysis"] = {
+        "task_type": "binary_classification",
+        "segment_columns": ["customer_state"],
+        "overall": {"false_negative_rate": 0.35, "false_positive_rate": 0.25},
+        "segments": {
+            "customer_state": [
+                {"segment_value": 0.42, "n": 8091, "n_positive": 488, "n_negative": 7603,
+                 "false_negative_rate": 0.547, "false_positive_rate": 0.137,
+                 "elevated_false_negative_rate": True, "elevated_false_positive_rate": False},
+            ],
+        },
+        "detection_note": "auto-detected",
+        "note": "note",
+    }
+    return report
+
+
+def test_prompt_includes_error_analysis_hedge_and_segment_detail(eda_report, ml_report_with_error_analysis):
+    prompt = _build_prompt(eda_report, ml_report_with_error_analysis)
+
+    assert _ERROR_CONCENTRATION_HEDGE in prompt
+    assert "customer_state=0.42" in prompt
+    assert "false_negative_rate=0.547" in prompt
+    # The instruction telling the LLM how to talk about it must also be present.
+    assert "never as a reason or explanation" in prompt
+    assert "do not speculate about what causes the segment to differ" in prompt
+
+
+def test_prompt_omits_error_analysis_data_line_when_not_present(eda_report, ml_report):
+    """ml_report (the base fixture) has no error_analysis key at all -- the
+    prompt must not crash and must simply omit the segment-findings data
+    line (the static instructions still mention 'Error analysis by segment'
+    as a phrase, but no actual "- Error analysis by segment ..." data bullet
+    should be generated when there's nothing to report)."""
+    prompt = _build_prompt(eda_report, ml_report)
+    assert "- Error analysis by segment" not in prompt
+
+
+def test_regression_prompt_includes_error_analysis_hedge(regression_eda_report, regression_ml_report):
+    report = dict(regression_ml_report)
+    report["error_analysis"] = {
+        "task_type": "regression",
+        "segment_columns": ["neighborhood"],
+        "overall": {"mae": 10.0, "mean_error": 1.0},
+        "segments": {
+            "neighborhood": [
+                {"segment_value": 0.7, "n": 60, "mae": 30.0, "mean_error": 20.0,
+                 "elevated_mae": True, "elevated_bias": True},
+            ],
+        },
+        "detection_note": "auto-detected",
+        "note": "note",
+    }
+    prompt = _build_prompt(regression_eda_report, report, unit_label="house")
+
+    assert _ERROR_CONCENTRATION_HEDGE in prompt
+    assert "neighborhood=0.7" in prompt
+    assert "mae=30.000" in prompt
+    assert "systematic over/under-prediction" in prompt
+
+
 def test_prompt_instructs_llm_not_to_conflate_accuracy_and_roc_auc(eda_report, ml_report):
     """Regression test: the LLM previously reported ROC-AUC (0.769) as if it
     were overall accuracy. The prompt must supply both figures separately,
@@ -326,6 +531,77 @@ def test_prompt_instructs_llm_not_to_conflate_accuracy_and_roc_auc(eda_report, m
     roc_auc = ml_report["test_metrics"]["roc_auc"]
     assert accuracy != pytest.approx(roc_auc, abs=0.01)
     assert f"{accuracy:.1%}" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Accuracy framing + causal language (handbook F8)
+# ---------------------------------------------------------------------------
+
+def test_majority_baseline_accuracy_computes_from_confusion_matrix():
+    # 90 actual negatives, 10 actual positives -- trivial "always predict
+    # negative" baseline is 90/100 = 90%.
+    cm = [[80, 10], [5, 5]]
+    assert _majority_baseline_accuracy(cm) == pytest.approx(90 / 100)
+
+
+def test_majority_baseline_accuracy_none_without_confusion_matrix():
+    assert _majority_baseline_accuracy(None) is None
+    assert _majority_baseline_accuracy([]) is None
+
+
+def test_prompt_flags_accuracy_below_majority_baseline(eda_report, ml_report):
+    """Regression test for the actual failure mode F8 exists to catch: on
+    this project's ~8% positive rate, class_weight='balanced' trades raw
+    accuracy for minority recall, so OVERALL ACCURACY (74.3%) is actually
+    WORSE than the trivial 'always predict on-time' baseline (91.9%) --
+    presenting 74.3% alone would mislead a reader into thinking it's a
+    solid, unqualified number."""
+    prompt = _build_prompt(eda_report, ml_report)
+
+    cm = ml_report["confusion_matrix"]
+    accuracy = _accuracy_from_confusion_matrix(cm)
+    baseline = _majority_baseline_accuracy(cm)
+    assert accuracy < baseline  # sanity: this fixture must exercise the below-baseline path
+
+    assert "MAJORITY-CLASS BASELINE ACCURACY" in prompt
+    assert f"{baseline:.1%}" in prompt
+    assert "BELOW this trivial baseline" in prompt
+    assert f"{accuracy:.1%} vs. {baseline:.1%}" in prompt
+
+    # And the instruction requiring the LLM to actually use it.
+    assert "you must also state the MAJORITY-CLASS BASELINE" in prompt
+    assert "expected tradeoff of correcting for class imbalance" in prompt
+
+
+def test_prompt_flags_accuracy_above_majority_baseline_when_model_beats_it(eda_report, ml_report):
+    """The opposite case: a well-separated model whose accuracy beats the
+    trivial baseline must be labeled 'above', not 'BELOW'."""
+    report = dict(ml_report)
+    # 95 correct out of 100, actual class split 60/40 -> baseline = 60%.
+    report["confusion_matrix"] = [[55, 5], [0, 40]]
+    prompt = _build_prompt(eda_report, report)
+
+    cm = report["confusion_matrix"]
+    accuracy = _accuracy_from_confusion_matrix(cm)
+    baseline = _majority_baseline_accuracy(cm)
+    assert accuracy > baseline
+
+    assert "beats this trivial baseline" in prompt
+    assert "BELOW this trivial baseline" not in prompt
+
+
+def test_causal_language_guardrail_present_in_classification_prompt(eda_report, ml_report):
+    prompt = _build_prompt(eda_report, ml_report)
+    assert _CAUSAL_LANGUAGE_GUARDRAIL in prompt
+    assert "causes" in prompt  # named as a banned word
+    assert "is associated with" in prompt  # named as the approved alternative
+
+
+def test_causal_language_guardrail_present_in_regression_prompt(
+    regression_eda_report, regression_ml_report
+):
+    prompt = _build_prompt(regression_eda_report, regression_ml_report, unit_label="house")
+    assert _CAUSAL_LANGUAGE_GUARDRAIL in prompt
 
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,20 @@ from src.agents.visualizer import VisualizationAgent, VisualizationReport
 _MIN_FILE_BYTES = 5_000   # any real PNG must be larger than this
 
 
+def _perm_imp(means: dict) -> dict:
+    """Build a permutation-importance dict (mean/std/flag), matching
+    MLReport.feature_importances' shape, from a flat name->mean mapping."""
+    result = {}
+    for name, mean in means.items():
+        std = abs(mean) * 0.1 if mean else 0.001
+        result[name] = {
+            "importance_mean": mean,
+            "importance_std": std,
+            "distinguishable_from_zero": not (mean - std <= 0 <= mean + std),
+        }
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
@@ -83,12 +97,12 @@ def simple_df():
 
 @pytest.fixture
 def sample_feature_importances():
-    return {
+    return _perm_imp({
         "feature_a": 0.045,
         "feature_b": 0.030,
         "feature_c": 0.010,
         "category": -0.002,
-    }
+    })
 
 
 @pytest.fixture
@@ -115,6 +129,29 @@ def sample_threshold_metrics():
 
 
 @pytest.fixture
+def sample_calibration():
+    return {
+        "prob_true": [0.05, 0.20, 0.45, 0.70, 0.90],
+        "prob_pred": [0.10, 0.25, 0.40, 0.65, 0.85],
+        "bin_counts": [40, 40, 40, 40, 40],
+        "brier_score": 0.08,
+        "ece": 0.06,
+    }
+
+
+@pytest.fixture
+def sample_calibrated_comparison():
+    return {
+        "method": "isotonic",
+        "prob_true": [0.06, 0.21, 0.44, 0.68, 0.89],
+        "prob_pred": [0.07, 0.22, 0.43, 0.67, 0.88],
+        "bin_counts": [40, 40, 40, 40, 40],
+        "brier_score": 0.05,
+        "ece": 0.02,
+    }
+
+
+@pytest.fixture
 def sample_test_predictions():
     """Synthetic regression actual/predicted pairs (handbook Section 8.2 genericity)."""
     rng = np.random.default_rng(2)
@@ -138,7 +175,7 @@ def regression_df():
 
 @pytest.fixture
 def regression_feature_importances():
-    return {"square_footage": 0.42, "num_bedrooms": 0.05}
+    return _perm_imp({"square_footage": 0.42, "num_bedrooms": 0.05})
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +252,7 @@ def test_feature_importance_skips_on_empty_dict(agent, output_dir):
 
 def test_feature_importance_respects_top_n(agent, output_dir):
     os.makedirs(output_dir, exist_ok=True)
-    importances = {f"feat_{i}": float(10 - i) for i in range(20)}
+    importances = _perm_imp({f"feat_{i}": float(10 - i) for i in range(20)})
     report = VisualizationReport()
     agent.top_importance_features = 5
     agent._chart_feature_importance(importances, output_dir, report)
@@ -332,6 +369,65 @@ def test_threshold_tradeoff_skips_on_none(agent, output_dir):
     agent._chart_threshold_tradeoff(None, output_dir, report)
     assert len(report.charts) == 0
     assert report.skipped[0]["name"] == "threshold_tradeoff"
+
+
+# ---------------------------------------------------------------------------
+# Chart 7 — Calibration curve (F3)
+# ---------------------------------------------------------------------------
+
+def test_calibration_curve_creates_nonempty_png(agent, sample_calibration, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_calibration_curve(sample_calibration, None, output_dir, report)
+    assert len(report.charts) == 1
+    assert os.path.getsize(report.charts[0]["path"]) > _MIN_FILE_BYTES
+    assert report.charts[0]["name"] == "calibration_curve"
+
+
+def test_calibration_curve_overlays_calibrated_comparison(
+    agent, sample_calibration, sample_calibrated_comparison, output_dir, keep_figure_open
+):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_calibration_curve(
+        sample_calibration, sample_calibrated_comparison, output_dir, report
+    )
+
+    ax = plt.gcf().axes[0]
+    legend_texts = [t.get_text() for t in ax.get_legend().get_texts()]
+    assert any("Raw model" in t for t in legend_texts)
+    assert any("Isotonic-calibrated" in t for t in legend_texts)
+    assert any("Perfectly calibrated" in t for t in legend_texts)
+
+
+def test_calibration_curve_no_comparison_overlay_when_absent(
+    agent, sample_calibration, output_dir, keep_figure_open
+):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_calibration_curve(sample_calibration, None, output_dir, report)
+
+    ax = plt.gcf().axes[0]
+    legend_texts = [t.get_text() for t in ax.get_legend().get_texts()]
+    # Only the reference diagonal + raw-model curve -- no comparison line.
+    assert legend_texts == ["Perfectly calibrated", "Raw model (ECE=0.060)"]
+    assert len(ax.get_lines()) == 2
+
+
+def test_calibration_curve_skips_on_none(agent, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_calibration_curve(None, None, output_dir, report)
+    assert len(report.charts) == 0
+    assert report.skipped[0]["name"] == "calibration_curve"
+
+
+def test_calibration_curve_skips_on_empty_dict(agent, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_calibration_curve({}, None, output_dir, report)
+    assert len(report.charts) == 0
+    assert report.skipped[0]["name"] == "calibration_curve"
 
 
 # ---------------------------------------------------------------------------
@@ -490,6 +586,144 @@ def test_top_feature_vs_target_boxplot_uses_custom_labels_when_provided(
 
 
 # ---------------------------------------------------------------------------
+# Chart 8 — Error rate by segment (handbook F6)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def sample_error_analysis_binary():
+    return {
+        "task_type": "binary_classification",
+        "segment_columns": ["region_code", "channel"],
+        "overall": {"false_negative_rate": 0.30, "false_positive_rate": 0.20},
+        "segments": {
+            "region_code": [
+                {"segment_value": 0.01, "n": 100, "n_positive": 40, "n_negative": 60,
+                 "false_negative_rate": 0.30, "false_positive_rate": 0.20,
+                 "elevated_false_negative_rate": False, "elevated_false_positive_rate": False},
+                {"segment_value": 0.42, "n": 200, "n_positive": 80, "n_negative": 120,
+                 "false_negative_rate": 0.70, "false_positive_rate": 0.15,
+                 "elevated_false_negative_rate": True, "elevated_false_positive_rate": False},
+            ],
+            "channel": [
+                {"segment_value": 1.0, "n": 150, "n_positive": 60, "n_negative": 90,
+                 "false_negative_rate": 0.28, "false_positive_rate": 0.18,
+                 "elevated_false_negative_rate": False, "elevated_false_positive_rate": False},
+            ],
+        },
+        "detection_note": "Segment columns auto-detected...",
+        "note": "Segments with fewer than 20 relevant rows are omitted...",
+    }
+
+
+@pytest.fixture
+def sample_error_analysis_regression():
+    return {
+        "task_type": "regression",
+        "segment_columns": ["zone"],
+        "overall": {"mae": 10.0, "mean_error": 1.0},
+        "segments": {
+            "zone": [
+                {"segment_value": 0.1, "n": 100, "mae": 9.0, "mean_error": 0.5,
+                 "elevated_mae": False, "elevated_bias": False},
+                {"segment_value": 0.9, "n": 100, "mae": 25.0, "mean_error": 15.0,
+                 "elevated_mae": True, "elevated_bias": True},
+            ],
+        },
+        "detection_note": "Segment columns auto-detected...",
+        "note": "Segments with fewer than 20 test rows are omitted...",
+    }
+
+
+def test_error_by_segment_creates_nonempty_png(agent, sample_error_analysis_binary, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_error_by_segment(sample_error_analysis_binary, output_dir, report)
+    assert len(report.charts) == 1
+    assert os.path.getsize(report.charts[0]["path"]) > _MIN_FILE_BYTES
+
+
+def test_error_by_segment_plots_at_most_two_columns(agent, sample_error_analysis_binary, output_dir, keep_figure_open):
+    """error_analysis has 2 segment_columns -- both (already <= 2) should
+    get their own panel; a 3rd would be dropped."""
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_error_by_segment(sample_error_analysis_binary, output_dir, report)
+    fig = plt.gcf()
+    assert len(fig.axes) == 2
+    titles = [ax.get_title() for ax in fig.axes]
+    assert titles == ["region_code", "channel"]
+
+
+def test_error_by_segment_marks_elevated_segments_in_tick_labels(
+    agent, sample_error_analysis_binary, output_dir, keep_figure_open
+):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_error_by_segment(sample_error_analysis_binary, output_dir, report)
+    ax = plt.gcf().axes[0]  # region_code panel
+    tick_texts = [t.get_text() for t in ax.get_xticklabels()]
+    assert "0.42*" in tick_texts   # elevated_false_negative_rate=True
+    assert "0.01" in tick_texts    # not elevated -- no asterisk
+
+
+def test_error_by_segment_regression_uses_mae(agent, sample_error_analysis_regression, output_dir, keep_figure_open):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_error_by_segment(sample_error_analysis_regression, output_dir, report)
+    ax = plt.gcf().axes[0]
+    assert ax.get_ylabel() == "MAE"
+    tick_texts = [t.get_text() for t in ax.get_xticklabels()]
+    assert "0.9*" in tick_texts
+    assert "0.1" in tick_texts
+
+
+def test_error_by_segment_skips_on_empty_dict(agent, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_error_by_segment({}, output_dir, report)
+    assert len(report.charts) == 0
+    assert report.skipped[0]["name"] == "error_by_segment"
+
+
+def test_error_by_segment_skips_when_segments_empty(agent, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    report = VisualizationReport()
+    agent._chart_error_by_segment(
+        {"task_type": "binary_classification", "segment_columns": ["x"], "segments": {}, "overall": {}},
+        output_dir, report,
+    )
+    assert len(report.charts) == 0
+    assert report.skipped[0]["name"] == "error_by_segment"
+
+
+def test_error_by_segment_generic_over_arbitrary_column_and_values(agent, output_dir, keep_figure_open):
+    """Non-Olist column name, string segment values, multiclass task --
+    nothing here is hardcoded to this project's schema."""
+    os.makedirs(output_dir, exist_ok=True)
+    error_analysis = {
+        "task_type": "multiclass_classification",
+        "segment_columns": ["shipping_carrier"],
+        "overall": {"misclassification_rate": 0.15},
+        "segments": {
+            "shipping_carrier": [
+                {"segment_value": "carrier_x", "n": 50, "misclassification_rate": 0.14,
+                 "elevated_misclassification_rate": False},
+                {"segment_value": "carrier_y", "n": 50, "misclassification_rate": 0.40,
+                 "elevated_misclassification_rate": True},
+            ],
+        },
+    }
+    report = VisualizationReport()
+    agent._chart_error_by_segment(error_analysis, output_dir, report)
+    assert len(report.charts) == 1
+    ax = plt.gcf().axes[0]
+    assert ax.get_ylabel() == "Misclassification rate"
+    tick_texts = [t.get_text() for t in ax.get_xticklabels()]
+    assert "carrier_y*" in tick_texts
+    assert "carrier_x" in tick_texts
+
+
+# ---------------------------------------------------------------------------
 # VisualizationAgent.run — end-to-end
 # ---------------------------------------------------------------------------
 
@@ -541,7 +775,7 @@ def e2e_ml_report(tmp_path):
             {"threshold": 0.4, "f1_macro": 0.5, "precision_minority": 0.14, "recall_minority": 0.70, "confusion_matrix": [[115, 35], [4, 11]]},
             {"threshold": 0.5, "f1_macro": 0.55, "precision_minority": 0.20, "recall_minority": 0.50, "confusion_matrix": [[140, 10], [7, 8]]},
         ],
-        "feature_importances": {"feat_a": 0.04, "feat_b": 0.02, "feat_c": 0.01},
+        "feature_importances": _perm_imp({"feat_a": 0.04, "feat_b": 0.02, "feat_c": 0.01}),
     }
     p = tmp_path / "ml_report.json"
     p.write_text(json.dumps(report))
@@ -557,9 +791,95 @@ def test_agent_run_creates_output_dir(agent, e2e_eda_report, e2e_ml_report, e2e_
 
 
 def test_agent_run_generates_all_six_charts(agent, e2e_eda_report, e2e_ml_report, e2e_csv, tmp_path):
+    """e2e_ml_report has no 'calibration' key -- the 7th chart is skipped,
+    not generated, so this stays at 6 (see the calibration-present variant
+    below for the 7-chart case)."""
     out = str(tmp_path / "viz")
     agent.run(e2e_eda_report, e2e_ml_report, e2e_csv, output_dir=out)
     assert len(agent.report_.charts) == 6
+    chart_names = [c["name"] for c in agent.report_.charts]
+    assert "calibration_curve" not in chart_names
+    assert any(s["name"] == "calibration_curve" for s in agent.report_.skipped)
+
+
+@pytest.fixture
+def e2e_ml_report_with_calibration(tmp_path):
+    report = {
+        "task_type": "binary_classification",
+        "best_model_name": "RandomForest",
+        "cv_scores": {"RandomForest": 0.55},
+        "test_metrics": {"f1_macro": 0.55, "roc_auc": 0.72},
+        "confusion_matrix": [[130, 20], [10, 5]],
+        "threshold_metrics": [
+            {"threshold": 0.3, "f1_macro": 0.4, "precision_minority": 0.10, "recall_minority": 0.80, "confusion_matrix": [[100, 50], [3, 12]]},
+            {"threshold": 0.5, "f1_macro": 0.55, "precision_minority": 0.20, "recall_minority": 0.50, "confusion_matrix": [[140, 10], [7, 8]]},
+        ],
+        "feature_importances": _perm_imp({"feat_a": 0.04, "feat_b": 0.02, "feat_c": 0.01}),
+        "calibration": {
+            "prob_true": [0.05, 0.45, 0.90], "prob_pred": [0.10, 0.40, 0.85],
+            "bin_counts": [40, 40, 40], "brier_score": 0.08, "ece": 0.06,
+        },
+        "calibrated_comparison": {
+            "method": "isotonic",
+            "prob_true": [0.06, 0.44, 0.89], "prob_pred": [0.07, 0.43, 0.88],
+            "bin_counts": [40, 40, 40], "brier_score": 0.05, "ece": 0.02,
+        },
+    }
+    p = tmp_path / "ml_report_with_calibration.json"
+    p.write_text(json.dumps(report))
+    return str(p)
+
+
+def test_agent_run_generates_seventh_chart_when_calibration_present(
+    agent, e2e_eda_report, e2e_ml_report_with_calibration, e2e_csv, tmp_path
+):
+    out = str(tmp_path / "viz")
+    agent.run(e2e_eda_report, e2e_ml_report_with_calibration, e2e_csv, output_dir=out)
+    chart_names = [c["name"] for c in agent.report_.charts]
+    assert len(agent.report_.charts) == 7
+    assert "calibration_curve" in chart_names
+
+
+@pytest.fixture
+def e2e_ml_report_with_error_analysis(tmp_path):
+    report = {
+        "task_type": "binary_classification",
+        "best_model_name": "RandomForest",
+        "cv_scores": {"RandomForest": 0.55},
+        "test_metrics": {"f1_macro": 0.55, "roc_auc": 0.72},
+        "confusion_matrix": [[130, 20], [10, 5]],
+        "threshold_metrics": [
+            {"threshold": 0.3, "f1_macro": 0.4, "precision_minority": 0.10, "recall_minority": 0.80, "confusion_matrix": [[100, 50], [3, 12]]},
+            {"threshold": 0.5, "f1_macro": 0.55, "precision_minority": 0.20, "recall_minority": 0.50, "confusion_matrix": [[140, 10], [7, 8]]},
+        ],
+        "feature_importances": _perm_imp({"feat_a": 0.04, "feat_b": 0.02, "feat_c": 0.01}),
+        "error_analysis": {
+            "task_type": "binary_classification",
+            "segment_columns": ["feat_a"],
+            "overall": {"false_negative_rate": 0.3, "false_positive_rate": 0.2},
+            "segments": {
+                "feat_a": [
+                    {"segment_value": 0.1, "n": 100, "n_positive": 40, "n_negative": 60,
+                     "false_negative_rate": 0.7, "false_positive_rate": 0.2,
+                     "elevated_false_negative_rate": True, "elevated_false_positive_rate": False},
+                ],
+            },
+            "detection_note": "auto-detected",
+            "note": "note",
+        },
+    }
+    p = tmp_path / "ml_report_with_error_analysis.json"
+    p.write_text(json.dumps(report))
+    return str(p)
+
+
+def test_agent_run_generates_eighth_chart_when_error_analysis_present(
+    agent, e2e_eda_report, e2e_ml_report_with_error_analysis, e2e_csv, tmp_path
+):
+    out = str(tmp_path / "viz")
+    agent.run(e2e_eda_report, e2e_ml_report_with_error_analysis, e2e_csv, output_dir=out)
+    chart_names = [c["name"] for c in agent.report_.charts]
+    assert "error_by_segment" in chart_names
 
 
 def test_agent_run_all_pngs_nonempty(agent, e2e_eda_report, e2e_ml_report, e2e_csv, tmp_path):
@@ -668,7 +988,7 @@ def e2e_regression_ml_report(tmp_path, sample_test_predictions):
         "test_metrics": {"rmse": 18500.2, "mae": 14200.5, "r2": 0.81, "adjusted_r2": 0.80},
         "confusion_matrix": None,
         "threshold_metrics": None,
-        "feature_importances": {"square_footage": 0.42, "num_bedrooms": 0.05, "lot_size": 0.02},
+        "feature_importances": _perm_imp({"square_footage": 0.42, "num_bedrooms": 0.05, "lot_size": 0.02}),
         "test_predictions": sample_test_predictions,
     }
     p = tmp_path / "reg_ml_report.json"
