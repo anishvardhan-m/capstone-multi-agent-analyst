@@ -329,6 +329,7 @@ class OrchestratorAgent:
         data_path: str,
         target_col: str,
         id_col: Optional[str] = None,
+        group_col: Optional[str] = None,
         positive_label: Optional[str] = None,
         negative_label: Optional[str] = None,
         unit_label: Optional[str] = None,
@@ -343,6 +344,15 @@ class OrchestratorAgent:
             Name of the column MLAgent should predict.
         id_col : str | None
             Row-identifier column, excluded from ML features.
+        group_col : str | None
+            A column identifying which rows belong to the same real-world
+            entity (e.g. a repeat-customer ID). When given, threaded into
+            FeatureEngineeringAgent as an extra protected column (so it
+            survives feature engineering as a raw identifier rather than
+            being frequency-encoded into a leaky count/proportion) and into
+            MLAgent so the train/test split uses GroupShuffleSplit on it --
+            no entity's rows end up split across both train and test. See
+            MLAgent.run's docstring for the full rationale.
         positive_label, negative_label, unit_label : str | None
             Business-domain vocabulary threaded into VisualizationAgent and
             BusinessInsightsAgent (e.g. "late delivery" / "on-time
@@ -357,8 +367,8 @@ class OrchestratorAgent:
         report = OrchestratorReport()
         completed: list = []
         logger.info(
-            "Starting full pipeline run on %s (target=%s, id_col=%s)",
-            data_path, target_col, id_col,
+            "Starting full pipeline run on %s (target=%s, id_col=%s, group_col=%s)",
+            data_path, target_col, id_col, group_col,
         )
 
         # ---- 1. DataCleaningAgent ----
@@ -391,7 +401,15 @@ class OrchestratorAgent:
         eda_report_path = result.message if result.status != "skipped" else None
 
         # ---- 3. FeatureEngineeringAgent ----
-        fe_agent = FeatureEngineeringAgent()
+        # target_col is ALWAYS protected here, not just when a group_col is
+        # given: feature_tools.PROTECTED_COLS' own defaults ("is_late_delivery",
+        # "order_id") are Olist-specific, so without this, any other dataset's
+        # target column would be silently scaled/log-transformed/encoded like
+        # any other feature -- corrupting what MLAgent trains against and
+        # making every downstream metric meaningless.
+        fe_agent = FeatureEngineeringAgent(
+            extra_protected_cols=[c for c in (target_col, group_col) if c]
+        )
         result = self._execute_step(
             "FeatureEngineeringAgent",
             lambda: fe_agent.run(cleaned_csv_path) if cleaned_csv_path
@@ -408,7 +426,9 @@ class OrchestratorAgent:
         ml_agent = MLAgent()
         result = self._execute_step(
             "MLAgent",
-            lambda: ml_agent.run(features_csv_path, target_col=target_col, id_col=id_col)
+            lambda: ml_agent.run(
+                features_csv_path, target_col=target_col, id_col=id_col, group_col=group_col,
+            )
             if features_csv_path else (False, "Upstream input (feature-engineered CSV) unavailable"),
             completed, STEP_NAMES[4:],
         )
@@ -500,6 +520,7 @@ if __name__ == "__main__":
     success, result = agent.run(
         data_path="data/processed/olist_flattened.csv",
         target_col="is_late_delivery",
+        group_col="customer_unique_id",
         positive_label="late delivery",
         negative_label="on-time delivery",
         unit_label="order",

@@ -324,6 +324,38 @@ def _build_threshold_table_html(threshold_metrics: Optional[list]) -> str:
     )
 
 
+def _build_calibration_caveat_html(ml: dict) -> str:
+    """Deterministic caveat shown wherever decision thresholds are
+    discussed (handbook F3): class_weight='balanced' shifts raw predicted
+    probabilities away from true likelihoods, so a threshold like 0.3 is a
+    precision/recall cutoff, not a literal percentage chance. Only shown
+    for binary classification, where threshold_metrics/calibration exist."""
+    if ml.get("task_type") != "binary_classification":
+        return ""
+
+    text = (
+        "<strong>Note on probabilities:</strong> this model uses "
+        "<code>class_weight='balanced'</code> to handle class imbalance, which "
+        "systematically shifts its raw predicted probabilities away from true "
+        "likelihoods. Treat each decision threshold above (e.g. threshold=0.3) "
+        "as a precision/recall cutoff chosen for a business tradeoff, not a "
+        "literal percentage chance of the outcome."
+    )
+    calibration = ml.get("calibration")
+    if calibration and calibration.get("ece") is not None:
+        text += f" Measured calibration error (ECE) for this model: {calibration['ece']:.3f}."
+
+    parts = [f"<p class='calibration-caveat'>{text}</p>"]
+
+    calibration_note = ml.get("calibration_note")
+    if calibration_note and ml.get("calibrated_comparison"):
+        parts.append(
+            f"<p class='calibration-caveat'>{html_escape.escape(calibration_note)}</p>"
+        )
+
+    return "\n".join(parts)
+
+
 def _build_model_performance_html(ml: dict) -> str:
     """Branch on task_type: classification gets the CV table + confusion
     matrix + threshold sweep; regression gets the CV table + RMSE/MAE/R^2
@@ -358,6 +390,9 @@ def _build_model_performance_html(ml: dict) -> str:
         threshold_table = _build_threshold_table_html(ml.get("threshold_metrics"))
         if threshold_table:
             parts.append(threshold_table)
+        caveat = _build_calibration_caveat_html(ml)
+        if caveat:
+            parts.append(caveat)
 
     return "\n".join(parts)
 
@@ -471,6 +506,14 @@ p { margin: 0 0 8px 0; }
 p.placeholder {
     color: #9ca3af;
     font-style: italic;
+}
+p.calibration-caveat {
+    font-size: 9pt;
+    color: #6b7280;
+    background: #f7f9fc;
+    border-left: 3px solid #2c6e91;
+    padding: 6px 10px;
+    margin: 8px 0;
 }
 ol, ul { margin: 0 0 10px 22px; padding: 0; }
 li { margin-bottom: 4px; }

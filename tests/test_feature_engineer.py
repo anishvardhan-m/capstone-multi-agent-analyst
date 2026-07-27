@@ -375,6 +375,82 @@ def test_agent_handles_nonexistent_file_gracefully():
     assert "Failed to read" in message
 
 
+def test_agent_extra_protected_cols_survive_untouched(tmp_path):
+    """A caller-supplied grouping column (e.g. a repeat-customer ID) must
+    pass through feature engineering completely unmodified -- not
+    frequency-encoded into a count/proportion -- so a downstream grouped
+    train/test split still has the real identity values to group on."""
+    rng = np.random.default_rng(3)
+    n = 100
+    # 40 unique customer ids, each repeated ~2-3x -- high enough cardinality
+    # that CategoricalEncoder would frequency-encode it by default.
+    customer_ids = [f"cust_{i % 40}" for i in range(n)]
+    df = pd.DataFrame({
+        "order_id": [f"oid_{i}" for i in range(n)],
+        "customer_unique_id": customer_ids,
+        "feature": rng.standard_normal(n),
+        "is_late_delivery": rng.choice([0, 1], n, p=[0.9, 0.1]),
+    })
+    path = tmp_path / "grouped.csv"
+    df.to_csv(path, index=False)
+
+    agent = FeatureEngineeringAgent(extra_protected_cols=["customer_unique_id"])
+    success, result_path = agent.run(str(path))
+    assert success is True
+
+    result = pd.read_csv(result_path)
+    assert "customer_unique_id" in result.columns
+    pd.testing.assert_series_equal(
+        result["customer_unique_id"].reset_index(drop=True),
+        df["customer_unique_id"].reset_index(drop=True),
+        check_names=True,
+    )
+    assert "customer_unique_id" not in agent.report_.encoding_map
+    assert "customer_unique_id" in agent.report_.protected_columns
+    # Defaults must still be protected too -- extra_protected_cols extends,
+    # not replaces, PROTECTED_COLS.
+    assert "is_late_delivery" in agent.report_.protected_columns
+    assert "order_id" in agent.report_.protected_columns
+
+
+def test_orchestrator_style_target_col_protection_on_non_olist_dataset(tmp_path):
+    """Regression test: reproduces exactly how orchestrator.py constructs
+    FeatureEngineeringAgent -- extra_protected_cols=[target_col, group_col]
+    -- on a dataset whose target ISN'T named 'is_late_delivery'. Without
+    threading target_col in, feature_tools.PROTECTED_COLS' Olist-specific
+    defaults would let a skewed target get silently log1p-transformed and
+    z-score-scaled here, corrupting what MLAgent later trains against."""
+    rng = np.random.default_rng(11)
+    n = 200
+    df = pd.DataFrame({
+        "feature_a": rng.standard_normal(n),
+        "feature_b": rng.exponential(scale=3, size=n),
+        # Skewed, positive, non-Olist target -- exactly the shape that
+        # would get log1p-transformed + scaled if left unprotected.
+        "readmission_risk_score": rng.exponential(scale=5, size=n),
+    })
+    path = tmp_path / "generic_target.csv"
+    df.to_csv(path, index=False)
+
+    target_col = "readmission_risk_score"
+    group_col = None  # orchestrator.py's [c for c in (target_col, group_col) if c]
+    agent = FeatureEngineeringAgent(
+        extra_protected_cols=[c for c in (target_col, group_col) if c]
+    )
+    success, result_path = agent.run(str(path))
+    assert success is True
+
+    result = pd.read_csv(result_path)
+    pd.testing.assert_series_equal(
+        result[target_col].reset_index(drop=True),
+        df[target_col].reset_index(drop=True),
+        check_names=True,
+    )
+    assert target_col not in agent.report_.log_transformed_columns
+    assert target_col not in agent.report_.scaled_columns
+    assert target_col in agent.report_.protected_columns
+
+
 def test_agent_report_is_json_serialisable(sample_csv):
     agent = FeatureEngineeringAgent()
     agent.run(sample_csv)

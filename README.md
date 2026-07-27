@@ -39,6 +39,16 @@ payment method, estimated delivery window). See the docstring in
 
 Build in progress. See commit history for stage-by-stage progress.
 
+## Known limitations
+
+The Olist model's rigor testing (calibration, seed robustness, error
+analysis across segments) surfaced real, specific limitations — not
+generic ML disclaimers. See [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)
+before treating the demo model's numbers as production-ready: raw
+predicted probabilities are uncalibrated, overall accuracy is actually
+*below* the trivial majority-class baseline (by design, not a bug), and
+a few other specific, verified caveats.
+
 ## Setup
 
 ```

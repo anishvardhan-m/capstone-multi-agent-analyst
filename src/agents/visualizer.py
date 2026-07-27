@@ -73,6 +73,7 @@ _PALETTE = sns.color_palette("muted")
 _PRIMARY = _PALETTE[0]   # blue-ish
 _ACCENT  = _PALETTE[1]   # orange-ish
 _RED     = _PALETTE[3]   # muted red for "late"
+_GREY    = "#a0a0a0"     # not distinguishable from no effect
 _TITLE_SIZE = 14
 _LABEL_SIZE = 11
 
@@ -172,7 +173,11 @@ class VisualizationAgent:
         if feature_importances:
             # Take columns that actually exist in the cleaned data, in importance order
             ordered = [
-                c for c in sorted(feature_importances, key=feature_importances.__getitem__, reverse=True)
+                c for c in sorted(
+                    feature_importances,
+                    key=lambda f: feature_importances[f]["importance_mean"],
+                    reverse=True,
+                )
                 if c in numeric_cols
             ]
             # Pad with high-variance columns if we don't have enough
@@ -291,27 +296,44 @@ class VisualizationAgent:
             )
             return
 
-        items = sorted(feature_importances.items(), key=lambda x: x[1], reverse=True)
+        items = sorted(
+            feature_importances.items(),
+            key=lambda kv: kv[1]["importance_mean"], reverse=True,
+        )
         items = items[: self.top_importance_features]
         names = [k for k, _ in items]
-        values = [v for _, v in items]
+        means = [v["importance_mean"] for _, v in items]
+        stds = [v["importance_std"] for _, v in items]
+        distinguishable = [v["distinguishable_from_zero"] for _, v in items]
 
-        # Color positive importances blue, negative red
-        colors = [_PRIMARY if v >= 0 else _RED for v in values]
+        # Color positive importances blue, negative red; features whose
+        # mean +/- std range spans zero get a muted grey instead, since
+        # their measured effect isn't distinguishable from no effect.
+        colors = [
+            _GREY if not dist else (_PRIMARY if m >= 0 else _RED)
+            for m, dist in zip(means, distinguishable)
+        ]
 
         with plt.style.context(_STYLE):
             fig, ax = plt.subplots(figsize=_FIG_SIZE)
-            bars = ax.barh(names[::-1], values[::-1], color=colors[::-1],
-                           edgecolor="white", linewidth=0.5)
+            bars = ax.barh(
+                names[::-1], means[::-1], xerr=stds[::-1], color=colors[::-1],
+                edgecolor="white", linewidth=0.5,
+                error_kw={"ecolor": "dimgrey", "elinewidth": 1, "capsize": 3},
+            )
             ax.axvline(0, color="grey", linewidth=0.8, linestyle="--")
-            ax.set_xlabel("Permutation Importance", fontsize=_LABEL_SIZE)
+            ax.set_xlabel(
+                "Permutation Importance (mean ± std across repeats)",
+                fontsize=_LABEL_SIZE,
+            )
             ax.set_ylabel("Feature", fontsize=_LABEL_SIZE)
             ax.set_title(
-                f"Top {len(items)} Feature Importances (Permutation)",
+                f"Top {len(items)} Feature Importances (Permutation; grey = "
+                "not distinguishable from no effect)",
                 fontsize=_TITLE_SIZE, pad=10,
             )
-            # Annotate each bar with its value
-            for bar, val in zip(bars, values[::-1]):
+            # Annotate each bar with its mean value
+            for bar, val in zip(bars, means[::-1]):
                 xpos = bar.get_width() + (0.0002 if val >= 0 else -0.0002)
                 ha = "left" if val >= 0 else "right"
                 ax.text(xpos, bar.get_y() + bar.get_height() / 2,
@@ -436,6 +458,72 @@ class VisualizationAgent:
             "Minority-class precision and recall across decision thresholds",
         )
         logger.info("Saved threshold tradeoff chart → %s", path)
+
+    # ------------------------------------------------------------------
+    # Chart 7 — Calibration curve (reliability diagram)
+    # ------------------------------------------------------------------
+
+    def _chart_calibration_curve(
+        self,
+        calibration: Optional[dict],
+        calibrated_comparison: Optional[dict],
+        output_dir: str,
+        report: VisualizationReport,
+    ) -> None:
+        """Reliability diagram: mean predicted probability per bin (x) vs.
+        observed frequency of the positive class in that bin (y), against
+        the y=x "perfectly calibrated" reference line. Overlays a
+        CalibratedClassifierCV comparison curve when the ML report
+        includes one (i.e. the raw model's ECE exceeded the miscalibration
+        threshold -- see MLAgent._maybe_calibrate)."""
+        if not calibration or not calibration.get("prob_pred"):
+            report.skip(
+                "calibration_curve",
+                "ML report has no calibration data (regression/multiclass task, "
+                "no predict_proba, or absent)",
+            )
+            return
+
+        with plt.style.context(_STYLE):
+            fig, ax = plt.subplots(figsize=_FIG_SIZE)
+            ax.plot(
+                [0, 1], [0, 1], color="grey", linewidth=1.5, linestyle="--",
+                label="Perfectly calibrated",
+            )
+            ax.plot(
+                calibration["prob_pred"], calibration["prob_true"],
+                marker="o", linewidth=2, color=_PRIMARY,
+                label=f"Raw model (ECE={calibration.get('ece', 0):.3f})",
+            )
+            if calibrated_comparison and calibrated_comparison.get("prob_pred"):
+                method = calibrated_comparison.get("method", "calibrated")
+                ax.plot(
+                    calibrated_comparison["prob_pred"], calibrated_comparison["prob_true"],
+                    marker="s", linewidth=2, linestyle=":", color=_ACCENT,
+                    label=f"{method.title()}-calibrated (ECE={calibrated_comparison.get('ece', 0):.3f})",
+                )
+
+            ax.set_xlabel("Mean predicted probability", fontsize=_LABEL_SIZE)
+            ax.set_ylabel("Observed frequency of positive class", fontsize=_LABEL_SIZE)
+            ax.set_title(
+                "Calibration Curve (Reliability Diagram)\n"
+                "class_weight='balanced' shifts raw probabilities — read decision "
+                "thresholds as cutoffs, not literal probabilities",
+                fontsize=_TITLE_SIZE - 2, pad=10,
+            )
+            ax.set_xlim(-0.02, 1.02)
+            ax.set_ylim(-0.02, 1.02)
+            ax.legend(fontsize=_LABEL_SIZE - 1, loc="upper left")
+            fig.tight_layout()
+            path = os.path.join(output_dir, "07_calibration_curve.png")
+            fig.savefig(path, dpi=_DPI, bbox_inches="tight")
+            plt.close(fig)
+
+        report.add(
+            "calibration_curve", path,
+            "Reliability diagram: predicted probability vs. observed frequency",
+        )
+        logger.info("Saved calibration curve chart → %s", path)
 
     # ------------------------------------------------------------------
     # Chart 4 (regression variant) — Actual vs. predicted scatter
@@ -581,7 +669,10 @@ class VisualizationAgent:
         # Pick the highest-importance feature that is numeric and in the data
         numeric_cols = set(df.select_dtypes(include=[np.number]).columns)
         top_feature = None
-        for feat in sorted(feature_importances, key=feature_importances.__getitem__, reverse=True):
+        for feat in sorted(
+            feature_importances,
+            key=lambda f: feature_importances[f]["importance_mean"], reverse=True,
+        ):
             if feat in numeric_cols and feat != target_col:
                 top_feature = feat
                 break
@@ -707,6 +798,109 @@ class VisualizationAgent:
         logger.info("Saved top-feature vs. target scatter → %s", path)
 
     # ------------------------------------------------------------------
+    # Chart 8 — Error rate by segment (handbook F6)
+    # ------------------------------------------------------------------
+
+    def _chart_error_by_segment(
+        self,
+        error_analysis: dict,
+        output_dir: str,
+        report: VisualizationReport,
+    ) -> None:
+        """Bar chart of error rate/MAE per segment value, for the first 1-2
+        columns in error_analysis["segment_columns"] -- already ordered by
+        the ML agent (higher cardinality first, see _detect_segment_columns),
+        so "top" here just means "first N of that list", not a fresh
+        ranking. A dashed reference line marks the overall rate/MAE so a
+        segment's deviation is visible at a glance. Segment axis, metric,
+        and even how many panels to draw are all read from the report --
+        nothing here is specific to this project's columns.
+        """
+        segment_cols = error_analysis.get("segment_columns") or []
+        segments = error_analysis.get("segments") or {}
+        overall = error_analysis.get("overall") or {}
+        task_type = error_analysis.get("task_type", "binary_classification")
+
+        cols_to_plot = [c for c in segment_cols[:2] if segments.get(c)]
+        if not cols_to_plot:
+            report.skip(
+                "error_by_segment",
+                "ML report has no error_analysis segments to plot",
+            )
+            return
+
+        with plt.style.context(_STYLE):
+            fig, axes = plt.subplots(
+                1, len(cols_to_plot), figsize=(7 * len(cols_to_plot), 5.5), squeeze=False,
+            )
+            axes_flat = axes[0]
+
+            for ax, col in zip(axes_flat, cols_to_plot):
+                rows = segments[col]
+                x = np.arange(len(rows))
+                elevated = [
+                    any(v is True for k, v in r.items() if k.startswith("elevated_"))
+                    for r in rows
+                ]
+                labels = [
+                    f"{r['segment_value']}{'*' if flag else ''}"
+                    for r, flag in zip(rows, elevated)
+                ]
+
+                if task_type == "binary_classification":
+                    width = 0.35
+                    fn = [r["false_negative_rate"] or 0 for r in rows]
+                    fp = [r["false_positive_rate"] or 0 for r in rows]
+                    ax.bar(x - width / 2, fn, width, color=_RED, label="False negative rate")
+                    ax.bar(x + width / 2, fp, width, color=_PRIMARY, label="False positive rate")
+                    if overall.get("false_negative_rate") is not None:
+                        ax.axhline(overall["false_negative_rate"], color=_RED,
+                                   linestyle="--", linewidth=1.3, label="Overall FN rate")
+                    if overall.get("false_positive_rate") is not None:
+                        ax.axhline(overall["false_positive_rate"], color=_PRIMARY,
+                                   linestyle=":", linewidth=1.3, label="Overall FP rate")
+                    ax.set_ylabel("Error rate", fontsize=_LABEL_SIZE)
+                elif task_type == "multiclass_classification":
+                    rate = [r["misclassification_rate"] for r in rows]
+                    ax.bar(x, rate, color=_PRIMARY, label="Misclassification rate")
+                    if overall.get("misclassification_rate") is not None:
+                        ax.axhline(overall["misclassification_rate"], color=_RED,
+                                   linestyle="--", linewidth=1.3, label="Overall rate")
+                    ax.set_ylabel("Misclassification rate", fontsize=_LABEL_SIZE)
+                else:  # regression
+                    mae = [r["mae"] for r in rows]
+                    ax.bar(x, mae, color=_PRIMARY, label="MAE")
+                    if overall.get("mae") is not None:
+                        ax.axhline(overall["mae"], color=_RED,
+                                   linestyle="--", linewidth=1.3, label="Overall MAE")
+                    ax.set_ylabel("MAE", fontsize=_LABEL_SIZE)
+
+                ax.set_xticks(x)
+                ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+                ax.set_xlabel(
+                    f"{col} (encoded segment value; * = elevated error)",
+                    fontsize=_LABEL_SIZE - 1,
+                )
+                ax.set_title(col, fontsize=_TITLE_SIZE - 1)
+                ax.legend(fontsize=8)
+
+            fig.suptitle(
+                "Error Rate by Segment -- an association observed in held-out "
+                "predictions, not a causal claim about why segments differ",
+                fontsize=_TITLE_SIZE - 1, y=1.02,
+            )
+            fig.tight_layout()
+            path = os.path.join(output_dir, "08_error_by_segment.png")
+            fig.savefig(path, dpi=_DPI, bbox_inches="tight")
+            plt.close(fig)
+
+        report.add(
+            "error_by_segment", path,
+            f"Error rate by segment for {cols_to_plot}",
+        )
+        logger.info("Saved error-by-segment chart → %s", path)
+
+    # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
 
@@ -779,6 +973,9 @@ class VisualizationAgent:
         confusion_matrix = ml.get("confusion_matrix")
         threshold_metrics = ml.get("threshold_metrics")
         test_predictions = ml.get("test_predictions")
+        calibration = ml.get("calibration")
+        calibrated_comparison = ml.get("calibrated_comparison")
+        error_analysis: dict = ml.get("error_analysis") or {}
         task_type: str = ml.get("task_type", "binary_classification")
 
         # --- Generate charts ---
@@ -792,10 +989,13 @@ class VisualizationAgent:
         else:
             self._chart_confusion_matrix(confusion_matrix, output_dir, report, task_type)
             self._chart_threshold_tradeoff(threshold_metrics, output_dir, report)
+            self._chart_calibration_curve(calibration, calibrated_comparison, output_dir, report)
 
         self._chart_top_feature_vs_target(
             df, target_col, feature_importances, output_dir, report, task_type=task_type
         )
+
+        self._chart_error_by_segment(error_analysis, output_dir, report)
 
         self.report_ = report
 

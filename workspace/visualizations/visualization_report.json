@@ -3,7 +3,7 @@
     {
       "name": "distributions",
       "path": "workspace/visualizations/01_distributions.png",
-      "description": "Histogram + KDE for ['purchase_to_estimated_days', 'customer_zip_code_prefix', 'n_distinct_products', 'n_items', 'avg_product_weight_g']"
+      "description": "Histogram + KDE for ['purchase_to_estimated_days', 'customer_zip_code_prefix', 'avg_product_photos_qty', 'n_distinct_products', 'max_installments']"
     },
     {
       "name": "correlation_heatmap",
@@ -26,9 +26,19 @@
       "description": "Minority-class precision and recall across decision thresholds"
     },
     {
+      "name": "calibration_curve",
+      "path": "workspace/visualizations/07_calibration_curve.png",
+      "description": "Reliability diagram: predicted probability vs. observed frequency"
+    },
+    {
       "name": "top_feature_vs_target",
       "path": "workspace/visualizations/06_top_feature_vs_target.png",
       "description": "Box plot of 'purchase_to_estimated_days' split by is_late_delivery"
+    },
+    {
+      "name": "error_by_segment",
+      "path": "workspace/visualizations/08_error_by_segment.png",
+      "description": "Error rate by segment for ['customer_state', 'max_installments']"
     }
   ],
   "skipped": []

@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.agents.report_generator import (
     ReportGenerationAgent,
     ReportGenerationReport,
+    _build_calibration_caveat_html,
     _build_charts_html,
     _build_data_diagnostics_html,
     _build_html_document,
@@ -258,6 +259,54 @@ def test_model_performance_regression_shows_rmse_not_confusion_matrix(
 def test_model_performance_placeholder_on_missing_report():
     html = _build_model_performance_html({})
     assert "unavailable" in html
+
+
+# ---------------------------------------------------------------------------
+# Calibration caveat (F3)
+# ---------------------------------------------------------------------------
+
+def test_calibration_caveat_shown_for_binary_classification(sample_classification_ml_report):
+    html = _build_calibration_caveat_html(sample_classification_ml_report)
+    assert "class_weight='balanced'" in html
+    assert "not a literal percentage chance" in html
+
+
+def test_calibration_caveat_included_in_full_model_performance_html(
+    sample_classification_ml_report,
+):
+    html = _build_model_performance_html(sample_classification_ml_report)
+    assert "calibration-caveat" in html
+    assert "class_weight='balanced'" in html
+
+
+def test_calibration_caveat_absent_for_regression(sample_regression_ml_report):
+    html = _build_calibration_caveat_html(sample_regression_ml_report)
+    assert html == ""
+
+    full_html = _build_model_performance_html(sample_regression_ml_report)
+    assert "calibration-caveat" not in full_html
+
+
+def test_calibration_caveat_mentions_measured_ece_when_present(sample_classification_ml_report):
+    report = dict(sample_classification_ml_report)
+    report["calibration"] = {"ece": 0.1234, "prob_true": [], "prob_pred": [], "bin_counts": []}
+    html = _build_calibration_caveat_html(report)
+    assert "0.123" in html
+
+
+def test_calibration_caveat_includes_comparison_note_when_calibrated(
+    sample_classification_ml_report,
+):
+    report = dict(sample_classification_ml_report)
+    report["calibration"] = {"ece": 0.2, "prob_true": [], "prob_pred": [], "bin_counts": []}
+    report["calibrated_comparison"] = {"method": "isotonic", "ece": 0.03}
+    report["calibration_note"] = "A calibrated comparison model was fit for XYZ."
+    html = _build_calibration_caveat_html(report)
+    assert "A calibrated comparison model was fit for XYZ." in html
+
+
+def test_calibration_caveat_missing_from_empty_report():
+    assert _build_calibration_caveat_html({}) == ""
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@
     24
   ],
   "protected_columns": [
+    "customer_unique_id",
     "is_late_delivery",
     "order_id"
   ],
@@ -42,7 +43,6 @@
   "encoding_map": {
     "order_purchase_timestamp": "frequency",
     "order_estimated_delivery_date": "frequency",
-    "customer_unique_id": "frequency",
     "customer_city": "frequency",
     "customer_state": "frequency",
     "primary_seller_state": "frequency",

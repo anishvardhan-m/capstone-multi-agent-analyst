@@ -1,7 +1,7 @@
 {
   "input_shape": [
     96476,
-    23
+    22
   ],
   "output_shape": [
     96476,
@@ -9,9 +9,7 @@
   ],
   "n_duplicates_removed": 0,
   "high_missing_columns_flagged": [],
-  "low_variance_columns_dropped": [
-    "order_status"
-  ],
+  "low_variance_columns_dropped": [],
   "columns_type_corrected": [],
   "numeric_columns_imputed": [
     "customer_zip_code_prefix",
@@ -30,7 +28,6 @@
   ],
   "categorical_columns_imputed": [
     "order_id",
-    "order_status",
     "order_purchase_timestamp",
     "order_estimated_delivery_date",
     "customer_unique_id",

@@ -16,7 +16,14 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.tools.audit_db import audit_logged, get_recent_runs, init_db, log_agent_run
+from src.tools.audit_db import (
+    audit_logged,
+    get_recent_experiments,
+    get_recent_runs,
+    init_db,
+    log_agent_run,
+    log_ml_experiment,
+)
 
 
 @pytest.fixture
@@ -221,3 +228,122 @@ def test_audit_logged_does_not_alter_return_value(db_path):
     agent.run = audit_logged("FakeAgent", db_path=db_path)(_FakeAgent.run).__get__(agent)
     result = agent.run("input.csv", output_path="explicit_out.csv")
     assert result == (True, "explicit_out.csv")
+
+
+# ---------------------------------------------------------------------------
+# ml_experiments (handbook F9)
+# ---------------------------------------------------------------------------
+
+def test_init_db_creates_ml_experiments_table_with_expected_columns(db_path):
+    init_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(ml_experiments)")}
+
+    expected = {
+        "id", "logged_at", "data_path", "target_col", "task_type", "best_model_name",
+        "split_strategy", "group_col", "random_state", "n_features",
+        "best_hyperparameters", "cv_scores", "cv_std", "test_metrics",
+        "model_selection_note", "nested_cv_score", "nested_cv_std", "report_path",
+    }
+    assert cols == expected
+
+
+def _log_sample_experiment(db_path, **overrides):
+    kwargs = dict(
+        data_path="data/features.csv",
+        target_col="is_late_delivery",
+        task_type="binary_classification",
+        best_model_name="HistGradientBoostingClassifier",
+        best_hyperparameters={"learning_rate": 0.1, "max_iter": 100},
+        cv_scores={"HistGradientBoostingClassifier": 0.57},
+        cv_std={"HistGradientBoostingClassifier": 0.005},
+        test_metrics={"f1_macro": 0.57, "roc_auc": 0.78},
+        split_strategy="grouped",
+        group_col="customer_unique_id",
+        random_state=42,
+        n_features=21,
+        model_selection_note=None,
+        nested_cv_score=0.565,
+        nested_cv_std=0.003,
+        report_path="data/features_ml_report.json",
+        db_path=db_path,
+    )
+    kwargs.update(overrides)
+    log_ml_experiment(**kwargs)
+
+
+def test_log_ml_experiment_inserts_and_get_recent_experiments_retrieves(db_path):
+    _log_sample_experiment(db_path)
+
+    rows = get_recent_experiments(db_path=db_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["data_path"] == "data/features.csv"
+    assert row["target_col"] == "is_late_delivery"
+    assert row["task_type"] == "binary_classification"
+    assert row["best_model_name"] == "HistGradientBoostingClassifier"
+    assert row["split_strategy"] == "grouped"
+    assert row["group_col"] == "customer_unique_id"
+    assert row["random_state"] == 42
+    assert row["n_features"] == 21
+    assert row["nested_cv_score"] == pytest.approx(0.565)
+    assert row["report_path"] == "data/features_ml_report.json"
+
+
+def test_log_ml_experiment_round_trips_dict_fields_as_json(db_path):
+    """best_hyperparameters/cv_scores/cv_std/test_metrics must decode back
+    into real dicts, not stay as JSON strings, and must survive arbitrary
+    keys -- nothing here is hardcoded to a specific metric name or model."""
+    _log_sample_experiment(
+        db_path,
+        best_hyperparameters={"max_depth": 10, "n_estimators": 200},
+        cv_scores={"ModelA": 0.5, "ModelB": 0.6},
+        cv_std={"ModelA": 0.01, "ModelB": 0.02},
+        test_metrics={"rmse": 123.4, "mae": 98.7, "adjusted_r2": 0.81},
+    )
+
+    row = get_recent_experiments(db_path=db_path)[0]
+    assert row["best_hyperparameters"] == {"max_depth": 10, "n_estimators": 200}
+    assert row["cv_scores"] == {"ModelA": 0.5, "ModelB": 0.6}
+    assert row["cv_std"] == {"ModelA": 0.01, "ModelB": 0.02}
+    assert row["test_metrics"] == {"rmse": 123.4, "mae": 98.7, "adjusted_r2": 0.81}
+
+
+def test_get_recent_experiments_orders_most_recent_first(db_path):
+    # logged_at is set internally to datetime.now() at insert time, so
+    # ordering relies on the id-descending tiebreak (same as
+    # get_recent_runs) rather than on forcing distinct timestamps here.
+    for name in ["First", "Second", "Third"]:
+        _log_sample_experiment(db_path, best_model_name=name)
+
+    rows = get_recent_experiments(db_path=db_path)
+    assert [r["best_model_name"] for r in rows] == ["Third", "Second", "First"]
+
+
+def test_get_recent_experiments_respects_limit(db_path):
+    for i in range(10):
+        _log_sample_experiment(db_path, best_model_name=f"Model{i}")
+
+    rows = get_recent_experiments(limit=3, db_path=db_path)
+    assert len(rows) == 3
+
+
+def test_get_recent_experiments_empty_when_nothing_logged(db_path):
+    assert get_recent_experiments(db_path=db_path) == []
+
+
+def test_log_ml_experiment_handles_missing_optional_fields(db_path):
+    """group_col/nested_cv/model_selection_note are all legitimately None
+    for many runs (row_random split, untuned winner, no close call)."""
+    _log_sample_experiment(
+        db_path,
+        split_strategy="row_random",
+        group_col=None,
+        model_selection_note=None,
+        nested_cv_score=None,
+        nested_cv_std=None,
+    )
+
+    row = get_recent_experiments(db_path=db_path)[0]
+    assert row["group_col"] is None
+    assert row["nested_cv_score"] is None

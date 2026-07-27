@@ -60,3 +60,22 @@ def adjusted_r2(r2: float, n_samples: int, n_features: int) -> float:
     if denom <= 0:
         return float("nan")
     return 1.0 - (1.0 - r2) * (n_samples - 1) / denom
+
+
+def expected_calibration_error(
+    prob_true: list, prob_pred: list, bin_counts: list
+) -> float:
+    """Weighted mean absolute gap between observed and predicted probability
+    across calibration bins, weighted by each bin's sample count -- a
+    single scalar summary of a reliability diagram (0 = perfectly
+    calibrated; larger = worse). A bin with more test samples says more
+    about the model's real-world calibration than a sparse one, hence the
+    weighting rather than a plain unweighted mean.
+    """
+    total = sum(bin_counts)
+    if total == 0:
+        return 0.0
+    weighted_gap = sum(
+        abs(pt - pp) * n for pt, pp, n in zip(prob_true, prob_pred, bin_counts)
+    )
+    return weighted_gap / total
