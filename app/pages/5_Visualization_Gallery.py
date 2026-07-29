@@ -2,9 +2,10 @@
 app/pages/5_Visualization_Gallery.py
 
 Visualization Gallery (capstone handbook, Section 13): every chart PNG in
-workspace/visualizations/, laid out in a grid with captions. Reads directly
-from the fixed workspace path rather than session_state, so charts from any
-previous pipeline run (even in an earlier session) still show up.
+this session's own run_id-namespaced workspace/{run_id}/visualizations/
+dir, laid out in a grid with captions. Falls back to the fixed
+workspace/visualizations/ path (the Olist demo's committed output) when
+this session hasn't run its own pipeline yet, same pattern as P3/P4.
 """
 
 import os
@@ -23,13 +24,27 @@ dh.ensure_session_state(st.session_state)
 
 st.title("Visualization Gallery")
 
-viz_dir = os.path.join(_PROJECT_ROOT, "workspace", "visualizations")
+viz_dir, viz_source = dh.resolve_dir_path(
+    st.session_state.get("viz_dir"), dh.DEFAULT_VIZ_DIR_REL
+)
+
+if not viz_dir:
+    st.info("No visualizations yet — run the pipeline first from the **Dataset Ingestion** page.")
+    st.stop()
+
 charts = dh.list_visualization_charts(viz_dir)
 available = [c for c in charts if c["exists"]]
 
 if not available:
     st.info("No visualizations yet — run the pipeline first from the **Dataset Ingestion** page.")
     st.stop()
+
+if viz_source == "fallback":
+    st.caption(
+        "Showing output from a previous run (no pipeline run found in this "
+        "session) — run the pipeline yourself from **Dataset Ingestion** to "
+        "see your own dataset's charts here."
+    )
 
 n_cols = 2
 columns = st.columns(n_cols)

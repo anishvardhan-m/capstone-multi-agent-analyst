@@ -93,6 +93,38 @@ def save_uploaded_file(file_bytes: bytes, filename: str, dest_dir: str) -> str:
     return dest_path
 
 
+def make_run_id(filename: str) -> str:
+    """Derive a filesystem-safe run_id from an uploaded filename's stem.
+
+    Passed to OrchestratorAgent.run(run_id=...) so a dataset's model file
+    and workspace outputs (charts, insights, PDF) land under
+    models/{run_id}_... and workspace/{run_id}/ instead of the fixed
+    default paths the Olist demo ships pre-run output at -- otherwise
+    uploading any new dataset would silently overwrite that demo output.
+    Falls back to a timestamp if the filename sanitizes to nothing (e.g.
+    a name made entirely of punctuation).
+    """
+    stem = os.path.splitext(os.path.basename(filename))[0]
+    sanitized = re.sub(r"[^a-z0-9_-]+", "_", stem.lower()).strip("_")
+    return sanitized or datetime.now().strftime("run_%Y%m%d_%H%M%S")
+
+
+def derive_workspace_paths(run_id: str) -> dict:
+    """Reconstruct this run's namespaced workspace output paths (charts
+    dir, insights markdown, final PDF) from its run_id, mirroring the
+    exact `workspace/{run_id}/...` layout OrchestratorAgent.run() uses
+    when given a run_id. Needed so the dashboard's session_state can
+    point the Visualization Gallery / Insights Panel / Reports Hub pages
+    at this run's own outputs instead of the fixed workspace/ defaults.
+    """
+    workspace_dir = os.path.join(PROJECT_ROOT, "workspace", run_id)
+    return {
+        "viz_dir": os.path.join(workspace_dir, "visualizations"),
+        "insights_md_path": os.path.join(workspace_dir, "business_insights.md"),
+        "report_pdf_path": os.path.join(workspace_dir, "executive_report.pdf"),
+    }
+
+
 def derive_pipeline_paths(raw_data_path: str) -> dict:
     """Reconstruct every intermediate artifact path the pipeline will
     produce from a raw input CSV path, following the exact naming
@@ -125,6 +157,13 @@ DEFAULT_CLEANING_REPORT_REL = os.path.join("data", "processed", "olist_flattened
 DEFAULT_EDA_REPORT_REL = os.path.join("data", "processed", "olist_flattened_cleaned_eda_report.json")
 DEFAULT_ML_REPORT_REL = os.path.join("data", "processed", "olist_flattened_cleaned_features_ml_report.json")
 
+# Same rationale, for the run_id-namespaced workspace outputs (P5-P7):
+# these are the fixed paths OrchestratorAgent.run() writes to when no
+# run_id is given -- i.e. the Olist demo's own committed workspace output.
+DEFAULT_VIZ_DIR_REL = os.path.join("workspace", "visualizations")
+DEFAULT_INSIGHTS_MD_REL = os.path.join("workspace", "business_insights.md")
+DEFAULT_REPORT_PDF_REL = os.path.join("workspace", "executive_report.pdf")
+
 
 def resolve_report_path(
     session_path: Optional[str],
@@ -143,6 +182,24 @@ def resolve_report_path(
         return session_path, "session"
     fallback = os.path.join(project_root, default_relative_path)
     if os.path.isfile(fallback):
+        return fallback, "fallback"
+    return None, None
+
+
+def resolve_dir_path(
+    session_path: Optional[str],
+    default_relative_path: str,
+    project_root: str = PROJECT_ROOT,
+) -> tuple:
+    """Directory counterpart to resolve_report_path (for the Visualization
+    Gallery's chart directory): this session's own run_id-namespaced
+    workspace dir if it exists, otherwise the fixed Olist demo directory,
+    otherwise nothing.
+    """
+    if session_path and os.path.isdir(session_path):
+        return session_path, "session"
+    fallback = os.path.join(project_root, default_relative_path)
+    if os.path.isdir(fallback):
         return fallback, "fallback"
     return None, None
 
@@ -543,12 +600,16 @@ DEFAULT_SESSION_STATE = {
     "pipeline_success": None,
     "orchestrator_message": None,
     "orchestrator_report": None,
+    "run_id": None,
     "cleaned_csv_path": None,
     "cleaning_report_path": None,
     "eda_report_path": None,
     "features_csv_path": None,
     "features_report_path": None,
     "ml_report_path": None,
+    "viz_dir": None,
+    "insights_md_path": None,
+    "report_pdf_path": None,
 }
 
 
