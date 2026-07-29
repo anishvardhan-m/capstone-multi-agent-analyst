@@ -3,7 +3,7 @@
     {
       "name": "distributions",
       "path": "workspace/visualizations/01_distributions.png",
-      "description": "Histogram + KDE for ['purchase_to_estimated_days', 'customer_zip_code_prefix', 'avg_product_photos_qty', 'n_distinct_products', 'max_installments']"
+      "description": "Histogram + KDE for ['purchase_to_estimated_days', 'customer_zip_code_prefix', 'total_price', 'avg_product_weight_g', 'avg_product_photos_qty']"
     },
     {
       "name": "correlation_heatmap",
