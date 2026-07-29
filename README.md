@@ -81,6 +81,47 @@ Run `python -m src.agents.orchestrator --help` for the full option list
 pytest tests/
 ```
 
+## Running with Docker
+
+The dashboard can also be run in a container (capstone handbook Section
+16.3) — this bundles Python, WeasyPrint's system libraries (Pango, cairo,
+GObject), and all Python dependencies into one image, so there's no local
+install step beyond Docker itself.
+
+```bash
+# 1. Build the image
+docker build -t ai-data-analyst .
+
+# 2. Run it, passing your .env file at runtime
+#    (.env is gitignored and is NOT baked into the image — supply it with
+#    --env-file, or use -e KEY=VALUE for individual variables instead)
+docker run -p 8501:8501 --env-file .env ai-data-analyst
+```
+
+Then open http://localhost:8501 in a browser.
+
+Notes:
+
+- `OPENAI_API_KEY` (and the other variables in `.env.example`) must be
+  supplied via `--env-file .env` or `-e` flags — the container has no
+  secrets baked in.
+- `workspace/`, `data/raw/`, `data/processed/`, and `models/` are runtime
+  artifacts, not baked into the image (see `.dockerignore`); mount them as
+  volumes (e.g. `-v $(pwd)/workspace:/app/workspace`) if you want results
+  to persist outside the container.
+- **A freshly built container starts with an empty `workspace/`** — no
+  demo charts, executive report, or audit log, since those are excluded
+  from the image by `.dockerignore`. The dashboard handles this
+  gracefully (every page shows a "run the pipeline first" message rather
+  than erroring), but pages 5–9 (Visualization Gallery, Insights Panel,
+  Reports Hub, System Log Explorer, Run History) will show no data until
+  the pipeline is run once from the **Dataset Ingestion** page.
+  - If you're running Docker on the same machine that already has the
+    Olist demo's `workspace/` populated locally, mount it instead of
+    starting empty: add `-v $(pwd)/workspace:/app/workspace` to the
+    `docker run` command above to see the existing results immediately
+    without re-running anything.
+
 ## Repository structure
 
 ```
