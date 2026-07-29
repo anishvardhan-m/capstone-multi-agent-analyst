@@ -26,6 +26,14 @@ workspace/metadata/*.db
 !workspace/visualizations/.gitkeep
 !workspace/metadata/.gitkeep
 
+# Exception: the Olist demo run's chart images and audit DB are committed
+# on purpose so the deployed dashboard (Streamlit Community Cloud) shows
+# real results on every page without anyone running the pipeline live.
+# agent_activity.log is NOT included here -- it's just a text log, not
+# needed for display, and stays covered by the *.log rule below.
+!workspace/visualizations/*.png
+!workspace/metadata/audit_telemetry.db
+
 # OS / editor
 .DS_Store
 .vscode/
