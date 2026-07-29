@@ -91,12 +91,15 @@ else:
 
             id_col = None if id_col_choice == "(none)" else id_col_choice
             group_col = None if group_col_choice == "(none)" else group_col_choice
+            run_id = dh.make_run_id(uploaded_file.name)
 
             st.session_state["raw_data_path"] = saved_path
             st.session_state["target_col"] = target_col
             st.session_state["id_col"] = id_col
             st.session_state["group_col"] = group_col
+            st.session_state["run_id"] = run_id
             st.session_state.update(dh.derive_pipeline_paths(saved_path))
+            st.session_state.update(dh.derive_workspace_paths(run_id))
 
             with st.spinner(
                 "Running the full pipeline — this trains multiple models via "
@@ -111,6 +114,7 @@ else:
                     positive_label=positive_label or None,
                     negative_label=negative_label or None,
                     unit_label=unit_label or None,
+                    run_id=run_id,
                 )
 
             st.session_state["pipeline_ran"] = True

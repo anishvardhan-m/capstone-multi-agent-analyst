@@ -2,8 +2,11 @@
 app/pages/7_Reports_Hub.py
 
 Reports Hub (capstone handbook, Section 13): download the compiled
-executive PDF report, with basic file metadata. Reads the fixed workspace
-path directly, same rationale as the Gallery/Insights pages.
+executive PDF report, with basic file metadata. Reads this session's own
+workspace/{run_id}/executive_report.pdf, falling back to the fixed
+workspace/executive_report.pdf (the Olist demo's committed output) when
+this session hasn't run its own pipeline yet, same pattern as the
+Gallery/Insights pages.
 """
 
 import os
@@ -22,12 +25,21 @@ dh.ensure_session_state(st.session_state)
 
 st.title("Reports Hub")
 
-report_path = os.path.join(_PROJECT_ROOT, "workspace", "executive_report.pdf")
+report_path, report_source = dh.resolve_report_path(
+    st.session_state.get("report_pdf_path"), dh.DEFAULT_REPORT_PDF_REL
+)
 meta = dh.get_file_metadata(report_path)
 
 if not meta["exists"]:
     st.info("No executive report yet — run the pipeline first from the **Dataset Ingestion** page.")
     st.stop()
+
+if report_source == "fallback":
+    st.caption(
+        "Showing output from a previous run (no pipeline run found in this "
+        "session) — run the pipeline yourself from **Dataset Ingestion** to "
+        "see your own dataset's report here."
+    )
 
 col1, col2 = st.columns(2)
 col1.metric("File size", meta["size_human"])
