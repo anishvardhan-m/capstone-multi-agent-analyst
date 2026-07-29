@@ -39,8 +39,11 @@ def test_init_db_creates_table_with_expected_columns(db_path):
     init_db(db_path)
     assert os.path.exists(db_path)
 
-    with sqlite3.connect(db_path) as conn:
+    conn = sqlite3.connect(db_path)
+    try:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_runs)")}
+    finally:
+        conn.close()
 
     expected = {
         "id", "agent_name", "started_at", "finished_at", "status",
@@ -236,8 +239,11 @@ def test_audit_logged_does_not_alter_return_value(db_path):
 
 def test_init_db_creates_ml_experiments_table_with_expected_columns(db_path):
     init_db(db_path)
-    with sqlite3.connect(db_path) as conn:
+    conn = sqlite3.connect(db_path)
+    try:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(ml_experiments)")}
+    finally:
+        conn.close()
 
     expected = {
         "id", "logged_at", "data_path", "target_col", "task_type", "best_model_name",

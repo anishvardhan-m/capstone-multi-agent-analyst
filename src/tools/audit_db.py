@@ -55,7 +55,8 @@ def init_db(db_path: Optional[str] = None) -> None:
     if db_path is None:
         db_path = DEFAULT_DB_PATH
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    with sqlite3.connect(db_path) as conn:
+    conn = sqlite3.connect(db_path)
+    try:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS agent_runs (
@@ -96,6 +97,8 @@ def init_db(db_path: Optional[str] = None) -> None:
             """
         )
         conn.commit()
+    finally:
+        conn.close()
 
 
 def log_agent_run(
@@ -118,7 +121,8 @@ def log_agent_run(
         db_path = DEFAULT_DB_PATH
     init_db(db_path)
     duration_seconds = (finished_at - started_at).total_seconds()
-    with sqlite3.connect(db_path) as conn:
+    conn = sqlite3.connect(db_path)
+    try:
         conn.execute(
             """
             INSERT INTO agent_runs
@@ -138,6 +142,8 @@ def log_agent_run(
             ),
         )
         conn.commit()
+    finally:
+        conn.close()
 
 
 def get_recent_runs(limit: int = 50, db_path: Optional[str] = None) -> list[dict]:
@@ -149,7 +155,8 @@ def get_recent_runs(limit: int = 50, db_path: Optional[str] = None) -> list[dict
     if db_path is None:
         db_path = DEFAULT_DB_PATH
     init_db(db_path)
-    with sqlite3.connect(db_path) as conn:
+    conn = sqlite3.connect(db_path)
+    try:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
@@ -161,6 +168,8 @@ def get_recent_runs(limit: int = 50, db_path: Optional[str] = None) -> list[dict
             """,
             (limit,),
         ).fetchall()
+    finally:
+        conn.close()
     return [dict(row) for row in rows]
 
 
@@ -201,7 +210,8 @@ def log_ml_experiment(
     if db_path is None:
         db_path = DEFAULT_DB_PATH
     init_db(db_path)
-    with sqlite3.connect(db_path) as conn:
+    conn = sqlite3.connect(db_path)
+    try:
         conn.execute(
             """
             INSERT INTO ml_experiments
@@ -232,6 +242,8 @@ def log_ml_experiment(
             ),
         )
         conn.commit()
+    finally:
+        conn.close()
 
 
 def get_recent_experiments(limit: int = 50, db_path: Optional[str] = None) -> list[dict]:
@@ -243,7 +255,8 @@ def get_recent_experiments(limit: int = 50, db_path: Optional[str] = None) -> li
     if db_path is None:
         db_path = DEFAULT_DB_PATH
     init_db(db_path)
-    with sqlite3.connect(db_path) as conn:
+    conn = sqlite3.connect(db_path)
+    try:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
@@ -257,6 +270,8 @@ def get_recent_experiments(limit: int = 50, db_path: Optional[str] = None) -> li
             """,
             (limit,),
         ).fetchall()
+    finally:
+        conn.close()
 
     json_cols = ("best_hyperparameters", "cv_scores", "cv_std", "test_metrics")
     results = []
