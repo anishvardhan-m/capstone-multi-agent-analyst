@@ -1,0 +1,44 @@
+# Environment / secrets
+.env
+*.env
+
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Data (large/raw, regenerate via data/flatten_olist.py; keep image lean)
+data/raw/*.csv
+data/processed/*.csv
+
+# Models (large trained-model binaries; not needed to build the image)
+models/*.pkl
+
+# Workspace runtime artifacts (generated at container run time, not build time)
+workspace/visualizations/*.png
+workspace/metadata/*.db
+workspace/*.pdf
+workspace/*.md
+workspace/*.log
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+RAW_DATASETS/
+
+# Docs not needed inside the image
+docs/
+KNOWN_LIMITATIONS.md
