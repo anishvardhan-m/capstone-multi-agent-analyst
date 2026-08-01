@@ -56,6 +56,50 @@ class DuplicateRemover(BaseEstimator, TransformerMixin):
         return X_clean
 
 
+DEFAULT_PLACEHOLDER_VALUES = ["unknown", "error", "n/a", "na", "none", "null", "-", "--", ""]
+
+
+class PlaceholderNullNormalizer(BaseEstimator, TransformerMixin):
+    """Converts placeholder "fake null" strings (e.g. "UNKNOWN", "ERROR",
+    "N/A") into real NaN so that MissingValueImputer -- which only
+    recognizes true NaN/null -- picks them up correctly instead of
+    treating them as legitimate categories.
+
+    Only object/string-dtype columns are touched; numeric columns are
+    left alone. Matching is case-insensitive and whitespace-stripped, but
+    requires an EXACT match against `placeholder_values` -- a value is
+    never treated as a placeholder just because it contains one as a
+    substring, so genuine short values (e.g. a real category that happens
+    to render as "-") are only swapped when they equal a listed
+    placeholder exactly.
+    """
+
+    def __init__(self, placeholder_values: Optional[list[str]] = None):
+        self.placeholder_values = placeholder_values
+        self.placeholder_counts_: dict = {}
+
+    def fit(self, X: pd.DataFrame, y=None) -> "PlaceholderNullNormalizer":
+        return self
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        values = self.placeholder_values if self.placeholder_values is not None else DEFAULT_PLACEHOLDER_VALUES
+        normalized_placeholders = {str(v).strip().lower() for v in values}
+
+        X_clean = X.copy()
+        self.placeholder_counts_ = {}
+
+        for col in X_clean.select_dtypes(exclude=[np.number]).columns:
+            is_placeholder = X_clean[col].apply(
+                lambda v: isinstance(v, str) and v.strip().lower() in normalized_placeholders
+            )
+            count = int(is_placeholder.sum())
+            if count > 0:
+                X_clean.loc[is_placeholder, col] = np.nan
+                self.placeholder_counts_[col] = count
+
+        return X_clean
+
+
 class MissingValueImputer(BaseEstimator, TransformerMixin):
     """Imputes missing values: median for numeric columns, mode for
     categorical columns.

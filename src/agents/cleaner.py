@@ -34,6 +34,7 @@ from src.tools.data_tools import (
     DuplicateRemover,
     LowVarianceColumnDropper,
     MissingValueImputer,
+    PlaceholderNullNormalizer,
 )
 from src.tools.logging_config import get_agent_logger
 
@@ -57,6 +58,7 @@ class CleaningReport:
     columns_type_corrected: list = field(default_factory=list)
     numeric_columns_imputed: list = field(default_factory=list)
     categorical_columns_imputed: list = field(default_factory=list)
+    placeholder_values_normalized: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -68,6 +70,7 @@ class CleaningReport:
             "columns_type_corrected": self.columns_type_corrected,
             "numeric_columns_imputed": self.numeric_columns_imputed,
             "categorical_columns_imputed": self.categorical_columns_imputed,
+            "placeholder_values_normalized": self.placeholder_values_normalized,
         }
 
 
@@ -95,10 +98,12 @@ class DataCleaningAgent:
         high_missing_threshold: float = 0.5,
         low_variance_threshold: float = 0.99,
         drop_high_missing_columns: bool = False,
+        placeholder_values: Optional[list[str]] = None,
     ):
         self.high_missing_threshold = high_missing_threshold
         self.low_variance_threshold = low_variance_threshold
         self.drop_high_missing_columns = drop_high_missing_columns
+        self.placeholder_values = placeholder_values
         self.report_: Optional[CleaningReport] = None
         self._pipeline: Optional[Pipeline] = None
 
@@ -106,6 +111,9 @@ class DataCleaningAgent:
         return Pipeline(
             steps=[
                 ("duplicate_remover", DuplicateRemover()),
+                ("placeholder_normalizer", PlaceholderNullNormalizer(
+                    placeholder_values=self.placeholder_values
+                )),
                 ("type_corrector", DataTypeCorrector()),
                 ("missing_imputer", MissingValueImputer(
                     high_missing_threshold=self.high_missing_threshold
@@ -149,6 +157,7 @@ class DataCleaningAgent:
             return False, f"Cleaning pipeline failed: {exc}"
 
         dup_remover = self._pipeline.named_steps["duplicate_remover"]
+        placeholder_normalizer = self._pipeline.named_steps["placeholder_normalizer"]
         type_corrector = self._pipeline.named_steps["type_corrector"]
         imputer = self._pipeline.named_steps["missing_imputer"]
         variance_dropper = self._pipeline.named_steps["low_variance_dropper"]
@@ -162,6 +171,7 @@ class DataCleaningAgent:
             columns_type_corrected=type_corrector.converted_columns_,
             numeric_columns_imputed=list(imputer.numeric_fill_values_.keys()),
             categorical_columns_imputed=list(imputer.categorical_fill_values_.keys()),
+            placeholder_values_normalized=placeholder_normalizer.placeholder_counts_,
         )
 
         logger.info("Cleaning complete: %s", self.report_.to_dict())
