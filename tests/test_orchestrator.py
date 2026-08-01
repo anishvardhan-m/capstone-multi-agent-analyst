@@ -13,10 +13,14 @@ Run with:
 """
 
 import contextlib
+import glob
+import hashlib
 import os
 import sys
 from unittest.mock import MagicMock, patch
 
+import numpy as np
+import pandas as pd
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -122,6 +126,57 @@ def test_happy_path_all_seven_steps_succeed(patched_agents):
     # ReportGenerationAgent must receive the chart paths VisualizationAgent produced.
     _, report_kwargs = patched_agents["report"].run.call_args
     assert report_kwargs["chart_paths"] == ["chart1.png", "chart2.png"]
+
+    # Default (no run_id) must reproduce today's exact fixed paths -- the
+    # deployed dashboard and the Olist demo depend on these unchanged.
+    _, ml_kwargs = patched_agents["ml"].run.call_args
+    assert ml_kwargs["model_output_path"] == "models/best_production_model.pkl"
+    _, viz_kwargs = patched_agents["viz"].run.call_args
+    assert viz_kwargs["output_dir"] == "workspace/visualizations"
+    _, insights_kwargs = patched_agents["insights"].run.call_args
+    assert insights_kwargs["output_dir"] == "workspace"
+    assert report_kwargs["output_path"] == "workspace/executive_report.pdf"
+
+
+# ---------------------------------------------------------------------------
+# run_id namespacing (genericity fix: two datasets must not clobber each other)
+# ---------------------------------------------------------------------------
+
+def test_run_id_namespaces_all_output_paths(patched_agents):
+    """A run_id must redirect the model file and every workspace output
+    into a namespaced location, leaving the fixed defaults (used when
+    run_id is omitted) completely untouched by this code path."""
+    agent = OrchestratorAgent(client=MagicMock())
+    success, result = agent.run(
+        data_path="raw.csv", target_col="target", run_id="my_dataset",
+    )
+
+    assert success is True
+
+    _, ml_kwargs = patched_agents["ml"].run.call_args
+    assert ml_kwargs["model_output_path"] == "models/my_dataset_best_production_model.pkl"
+
+    _, viz_kwargs = patched_agents["viz"].run.call_args
+    assert viz_kwargs["output_dir"] == "workspace/my_dataset/visualizations"
+
+    _, insights_kwargs = patched_agents["insights"].run.call_args
+    assert insights_kwargs["output_dir"] == "workspace/my_dataset"
+
+    _, report_kwargs = patched_agents["report"].run.call_args
+    assert report_kwargs["output_path"] == "workspace/my_dataset/executive_report.pdf"
+
+    assert agent.report_.model_path == "models/my_dataset_best_production_model.pkl"
+
+
+def test_run_id_none_is_indistinguishable_from_omitted(patched_agents):
+    """Passing run_id=None explicitly must behave exactly like omitting it."""
+    agent = OrchestratorAgent(client=MagicMock())
+    agent.run(data_path="raw.csv", target_col="target", run_id=None)
+
+    _, ml_kwargs = patched_agents["ml"].run.call_args
+    assert ml_kwargs["model_output_path"] == "models/best_production_model.pkl"
+    _, viz_kwargs = patched_agents["viz"].run.call_args
+    assert viz_kwargs["output_dir"] == "workspace/visualizations"
 
 
 def test_happy_path_threads_group_col_into_fe_and_ml(patched_agents):
@@ -241,6 +296,81 @@ def test_failure_then_graceful_skip(patched_agents):
 
 
 # ---------------------------------------------------------------------------
+# MLAgent skipped (e.g. a genuine data problem like too-rare target classes)
+# must cascade into a clean, clearly-worded skip of BusinessInsightsAgent --
+# never the bare "[Errno 2] No such file or directory: ''" that used to
+# surface when an empty ml_report_path got forwarded straight into
+# BusinessInsightsAgent.run().
+# ---------------------------------------------------------------------------
+
+def test_ml_agent_skipped_cascades_to_clean_insights_skip(patched_agents):
+    patched_agents["ml"].run.return_value = (
+        False, "Target column 'target' has a class with only 2 samples -- too few for stratified CV"
+    )
+    client = _mock_recovery_client("skip", "Not enough data per class to train reliably; continue without a model.")
+
+    agent = OrchestratorAgent(client=client)
+    success, result = agent.run(data_path="raw.csv", target_col="target")
+
+    # The pipeline must still complete in degraded form, not abort.
+    assert success is True
+    assert agent.report_.aborted is False
+    assert [s.name for s in agent.report_.steps] == STEP_NAMES
+
+    ml_step = next(s for s in agent.report_.steps if s.name == "MLAgent")
+    assert ml_step.status == "skipped"
+
+    insights_step = next(s for s in agent.report_.steps if s.name == "BusinessInsightsAgent")
+    assert insights_step.status == "skipped"
+    # BusinessInsightsAgent must never actually be invoked with a missing
+    # path -- confirms the skip happens BEFORE any call, not via a crash
+    # inside agent.run() that then gets classified as a "failure".
+    assert patched_agents["insights"].run.call_count == 0
+    assert insights_step.attempts == 0
+    # The message must clearly name the upstream cause -- never a bare
+    # file-path/errno error.
+    assert "MLAgent" in insights_step.message
+    assert "ML report" in insights_step.message
+    assert "Errno" not in insights_step.message
+    assert "No such file or directory" not in insights_step.message
+
+    # VisualizationAgent (already tolerant of a missing ML report) and
+    # ReportGenerationAgent (renders placeholder sections for what's
+    # missing) must both still run rather than being skipped.
+    viz_step = next(s for s in agent.report_.steps if s.name == "VisualizationAgent")
+    assert viz_step.status == "success"
+    report_step = next(s for s in agent.report_.steps if s.name == "ReportGenerationAgent")
+    assert report_step.status == "success"
+    assert patched_agents["report"].run.call_count == 1
+
+    # ReportGenerationAgent must receive the real eda path but an empty
+    # ml_report_path/insights_md_path -- it already degrades these to
+    # placeholders internally rather than needing the orchestrator to skip
+    # it too.
+    _, report_kwargs = patched_agents["report"].run.call_args
+    assert report_kwargs["ml_report_path"] == ""
+    assert report_kwargs["insights_md_path"] == ""
+
+
+def test_eda_agent_skipped_cascades_to_clean_insights_skip(patched_agents):
+    """Same cascade, triggered from the other required upstream input."""
+    patched_agents["eda"].run.return_value = (False, "EDA computation blew up on a malformed column")
+    client = _mock_recovery_client("skip", "EDA is supplementary here; continue without it.")
+
+    agent = OrchestratorAgent(client=client)
+    success, result = agent.run(data_path="raw.csv", target_col="target")
+
+    assert success is True
+    assert agent.report_.aborted is False
+
+    insights_step = next(s for s in agent.report_.steps if s.name == "BusinessInsightsAgent")
+    assert insights_step.status == "skipped"
+    assert patched_agents["insights"].run.call_count == 0
+    assert "EDAAgent" in insights_step.message
+    assert "EDA report" in insights_step.message
+
+
+# ---------------------------------------------------------------------------
 # Failure + abort
 # ---------------------------------------------------------------------------
 
@@ -309,3 +439,129 @@ def test_custom_max_retries_allows_more_than_one_retry(patched_agents):
     ml_step = next(s for s in agent.report_.steps if s.name == "MLAgent")
     assert ml_step.status == "success_after_retry"
     assert ml_step.attempts == 3
+
+
+# ---------------------------------------------------------------------------
+# Real end-to-end integration test: two datasets, two run_ids, no clobbering
+# ---------------------------------------------------------------------------
+# Unlike every test above, nothing here is mocked except the LLM network
+# calls (BusinessInsightsAgent's OpenAI client, and the Orchestrator's own
+# recovery client, which a happy path never even calls) -- the real
+# DataCleaningAgent, EDAAgent, FeatureEngineeringAgent, MLAgent,
+# VisualizationAgent, and ReportGenerationAgent all run for real, against
+# two small but genuinely different synthetic regression datasets, to
+# prove run_id namespacing actually holds up end to end, not just at the
+# call-kwargs level the tests above check.
+
+def _md5(path: str) -> str:
+    with open(path, "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()
+
+
+def _make_small_regression_csv(path: str, seed: int, n: int = 160) -> None:
+    """A tiny, genuinely learnable regression dataset -- distinct column
+    names/count per seed so the two datasets used below aren't just the
+    same schema with different random values."""
+    rng = np.random.default_rng(seed)
+    if seed == 1:
+        size_sqft = rng.normal(1800, 400, n).clip(400, 4000)
+        rooms = rng.integers(1, 6, n)
+        age_years = rng.integers(0, 80, n)
+        target = size_sqft * 120 + rooms * 3000 - age_years * 200 + rng.normal(0, 5000, n)
+        df = pd.DataFrame({
+            "size_sqft": size_sqft, "rooms": rooms, "age_years": age_years,
+            "sale_price": target,
+        })
+    else:
+        engine_size = rng.normal(2.5, 0.8, n).clip(1.0, 6.0)
+        mileage = rng.normal(60000, 30000, n).clip(0, 200000)
+        horsepower = rng.normal(200, 60, n).clip(90, 500)
+        target = horsepower * 150 - mileage * 0.05 + engine_size * 800 + rng.normal(0, 3000, n)
+        df = pd.DataFrame({
+            "engine_size": engine_size, "mileage": mileage, "horsepower": horsepower,
+            "car_value": target,
+        })
+    df.to_csv(path, index=False)
+
+
+@pytest.fixture
+def mocked_llm_client():
+    """Patch the OpenAI class BusinessInsightsAgent constructs internally
+    (src.agents.insights._get_client), so its real prompt-construction and
+    markdown-writing logic runs, but no network call happens."""
+    with patch("src.agents.insights.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_llm_response(
+            "## What We Found\nSome findings.\n\n"
+            "## What Matters Most\nSome drivers.\n\n"
+            "## Recommendations\nSome recommendations.\n"
+        )
+        mock_openai_cls.return_value = mock_client
+        yield mock_client
+
+
+def test_two_datasets_with_different_run_ids_do_not_clobber_each_other(
+    tmp_path, monkeypatch, mocked_llm_client,
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-real")
+
+    os.makedirs("data/raw", exist_ok=True)
+    _make_small_regression_csv("data/raw/houses.csv", seed=1)
+    _make_small_regression_csv("data/raw/cars.csv", seed=2)
+
+    agent = OrchestratorAgent(client=MagicMock())
+
+    success_a, result_a = agent.run(
+        data_path="data/raw/houses.csv", target_col="sale_price", run_id="houses",
+    )
+    assert success_a is True, result_a
+    assert agent.report_.aborted is False
+
+    model_a_path = "models/houses_best_production_model.pkl"
+    assert os.path.isfile(model_a_path)
+    model_a_hash_after_run_a = _md5(model_a_path)
+
+    success_b, result_b = agent.run(
+        data_path="data/raw/cars.csv", target_col="car_value", run_id="cars",
+    )
+    assert success_b is True, result_b
+    assert agent.report_.aborted is False
+
+    # Both models exist, are namespaced, and neither run touched the other's.
+    model_b_path = "models/cars_best_production_model.pkl"
+    assert os.path.isfile(model_a_path)
+    assert os.path.isfile(model_b_path)
+    model_a_hash_after_run_b = _md5(model_a_path)
+    assert model_a_hash_after_run_b == model_a_hash_after_run_a
+
+    # Both workspaces exist independently, each with its own charts, insights, PDF.
+    assert os.path.isdir("workspace/houses")
+    assert os.path.isdir("workspace/cars")
+    assert os.path.isfile("workspace/houses/business_insights.md")
+    assert os.path.isfile("workspace/cars/business_insights.md")
+    assert os.path.isfile("workspace/houses/executive_report.pdf")
+    assert os.path.isfile("workspace/cars/executive_report.pdf")
+
+    houses_charts = sorted(glob.glob("workspace/houses/visualizations/*.png"))
+    cars_charts = sorted(glob.glob("workspace/cars/visualizations/*.png"))
+    assert len(houses_charts) > 0
+    assert len(cars_charts) > 0
+
+    # The two ml_report.json files reflect genuinely different data (proof
+    # this isn't one run's output masquerading as two, e.g. via a bug that
+    # accidentally pointed both run_ids at the same underlying path).
+    import json
+    with open("data/raw/houses_cleaned_features_ml_report.json") as f:
+        houses_ml_report = json.load(f)
+    with open("data/raw/cars_cleaned_features_ml_report.json") as f:
+        cars_ml_report = json.load(f)
+    assert set(houses_ml_report["feature_importances"].keys()) == {"size_sqft", "rooms", "age_years"}
+    assert set(cars_ml_report["feature_importances"].keys()) == {"engine_size", "mileage", "horsepower"}
+
+    # The fixed default paths (what run_id=None uses) were never touched --
+    # confirming this run_id-based code path is fully additive.
+    assert not os.path.exists("models/best_production_model.pkl")
+    assert not os.path.exists("workspace/business_insights.md")
+    assert not os.path.exists("workspace/executive_report.pdf")
+    assert not os.path.exists("workspace/visualizations")
