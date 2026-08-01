@@ -12,7 +12,7 @@ Capstone project — 6 Month Internship in Data Science, AI & ML
 (Techible x IIT Jammu).
 
 **Status:** Feature-complete — all 8 agents, the orchestrator, and the
-dashboard are built and tested (372 passing tests), including a dedicated
+dashboard are built and tested (384 passing tests), including a dedicated
 rigor review (data leakage safety, calibration, seed-robustness, segment
 error analysis — see [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)).
 
@@ -194,7 +194,7 @@ before treating the demo model's numbers as production-ready.
 
 ## Testing
 
-372 tests across unit and integration suites, covering every agent plus
+384 tests across unit and integration suites, covering every agent plus
 the orchestrator's failure-recovery paths.
 
 ```bash

@@ -39,6 +39,9 @@ workspace/*.log
 
 RAW_DATASETS/
 
-# Docs not needed inside the image
+# Docs not needed inside the image. KNOWN_LIMITATIONS.md is deliberately
+# NOT listed here -- app/pages/7_Reports_Hub.py reads it at runtime to
+# render the dashboard's "Known Limitations" section; excluding it doesn't
+# crash the page (it degrades to "not found"), but silently drops a real
+# feature from every Docker deploy.
 docs/
-KNOWN_LIMITATIONS.md
