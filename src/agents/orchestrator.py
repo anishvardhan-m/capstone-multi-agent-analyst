@@ -47,6 +47,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -59,7 +60,7 @@ from src.agents.insights import BusinessInsightsAgent
 from src.agents.ml_agent import MLAgent
 from src.agents.report_generator import ReportGenerationAgent
 from src.agents.visualizer import VisualizationAgent
-from src.tools.audit_db import audit_logged
+from src.tools.audit_db import audit_logged, log_agent_run
 from src.tools.logging_config import get_agent_logger
 
 logger = get_agent_logger("OrchestratorAgent")
@@ -309,6 +310,39 @@ class OrchestratorAgent:
                 attempts=attempts, message=result, llm_action=action, llm_reasoning=reasoning,
             )
 
+    def _skip_step(self, step_name: str, reason: str) -> StepResult:
+        """Build a StepResult for a step skipped BEFORE it ever runs, because
+        a required upstream input is missing (that upstream step was itself
+        skipped or failed).
+
+        This is deliberately NOT routed through `_execute_step` /
+        `_get_recovery_action`: whether to continue here is already fully
+        determined by upstream state, not a genuine failure that needs an
+        LLM's judgment call, and calling the step's real run() with an
+        empty/placeholder path would just reproduce the confusing bare
+        file-path error this method exists to avoid (see BusinessInsightsAgent
+        below -- it cannot produce a grounded narrative without the ML
+        report it summarizes, so skipping it outright, with a clear reason,
+        is the right call rather than degrading in place).
+
+        Also writes a synthetic 'skipped' row to the audit_runs table:
+        since the step's own run() never executes, the @audit_logged
+        decorator on its run() method never fires either, so without this
+        the System Log Explorer would show no trace at all of this step --
+        indistinguishable from the step never having been reached.
+        """
+        logger.info("%s skipped: %s", step_name, reason)
+        now = datetime.now(timezone.utc)
+        log_agent_run(
+            agent_name=step_name, started_at=now, finished_at=now,
+            status="skipped", input_path=None, output_path=None,
+            error_message=reason,
+        )
+        return StepResult(
+            name=step_name, status="skipped", attempts=0, message=reason,
+            llm_action=None, llm_reasoning=None,
+        )
+
     def _finalize_abort(
         self, report: OrchestratorReport, start_time: float, step_name: str, error_message: str
     ) -> tuple[bool, str]:
@@ -333,6 +367,7 @@ class OrchestratorAgent:
         positive_label: Optional[str] = None,
         negative_label: Optional[str] = None,
         unit_label: Optional[str] = None,
+        run_id: Optional[str] = None,
     ) -> tuple[bool, str]:
         """Run the full 7-agent pipeline end to end.
 
@@ -358,6 +393,23 @@ class OrchestratorAgent:
             BusinessInsightsAgent (e.g. "late delivery" / "on-time
             delivery" / "order"). Defaults to each agent's own generic
             fallback when not provided.
+        run_id : str | None
+            Namespaces this run's model file and workspace outputs so a
+            second, different dataset never silently overwrites the
+            first's results (found during genericity testing: every output
+            path used to be fixed regardless of dataset). Defaults to
+            None, which reproduces today's exact fixed paths --
+            `models/best_production_model.pkl`,
+            `workspace/visualizations/`, `workspace/business_insights.md`,
+            `workspace/executive_report.pdf` -- unchanged, since the
+            deployed dashboard and the Olist demo depend on those exact
+            paths. When given, outputs instead go to
+            `models/{run_id}_best_production_model.pkl` and
+            `workspace/{run_id}/` (charts, insights markdown, and the PDF
+            all under that subdirectory). Intermediate `data/processed/`
+            (or wherever the input CSV lives) files already namespace
+            themselves by the input filename's stem via each upstream
+            agent's own `<stem>_...` naming, so they need no run_id.
 
         Returns
         -------
@@ -367,9 +419,18 @@ class OrchestratorAgent:
         report = OrchestratorReport()
         completed: list = []
         logger.info(
-            "Starting full pipeline run on %s (target=%s, id_col=%s, group_col=%s)",
-            data_path, target_col, id_col, group_col,
+            "Starting full pipeline run on %s (target=%s, id_col=%s, group_col=%s, run_id=%s)",
+            data_path, target_col, id_col, group_col, run_id,
         )
+
+        if run_id:
+            model_output_path = f"models/{run_id}_best_production_model.pkl"
+            workspace_dir = f"workspace/{run_id}"
+        else:
+            model_output_path = _MODEL_OUTPUT_PATH
+            workspace_dir = "workspace"
+        viz_output_dir = os.path.join(workspace_dir, "visualizations")
+        report_output_path = os.path.join(workspace_dir, "executive_report.pdf")
 
         # ---- 1. DataCleaningAgent ----
         cleaning_agent = DataCleaningAgent()
@@ -428,6 +489,7 @@ class OrchestratorAgent:
             "MLAgent",
             lambda: ml_agent.run(
                 features_csv_path, target_col=target_col, id_col=id_col, group_col=group_col,
+                model_output_path=model_output_path,
             )
             if features_csv_path else (False, "Upstream input (feature-engineered CSV) unavailable"),
             completed, STEP_NAMES[4:],
@@ -438,7 +500,7 @@ class OrchestratorAgent:
             return self._finalize_abort(report, start_time, result.name, result.message)
         ml_report_path = result.message if result.status != "skipped" else None
         if ml_report_path:
-            report.model_path = _MODEL_OUTPUT_PATH
+            report.model_path = model_output_path
 
         # ---- 5. VisualizationAgent ----
         viz_agent = VisualizationAgent(
@@ -451,7 +513,7 @@ class OrchestratorAgent:
                 ml_report_path=ml_report_path or "",
                 cleaned_data_path=cleaned_csv_path or "",
                 target_col=target_col,
-                output_dir="workspace/visualizations",
+                output_dir=viz_output_dir,
             ),
             completed, STEP_NAMES[5:],
         )
@@ -464,18 +526,45 @@ class OrchestratorAgent:
         )
 
         # ---- 6. BusinessInsightsAgent ----
-        insights_agent = BusinessInsightsAgent(
-            positive_label=positive_label, negative_label=negative_label, unit_label=unit_label,
-        )
-        result = self._execute_step(
-            "BusinessInsightsAgent",
-            lambda: insights_agent.run(
-                eda_report_path=eda_report_path or "",
-                ml_report_path=ml_report_path or "",
-                output_dir="workspace",
-            ),
-            completed, STEP_NAMES[6:],
-        )
+        # Unlike VisualizationAgent (which can still produce partial charts
+        # from whichever of eda/ml/cleaned-data it does have) and
+        # ReportGenerationAgent (which renders placeholder sections for
+        # whatever's missing), BusinessInsightsAgent's whole prompt branches
+        # on the ML report's task_type -- it has no meaningful "EDA-only"
+        # narrative to fall back to. So when either upstream report is
+        # missing, skip it outright with a clear reason instead of calling
+        # it with an empty path (which used to surface as a bare
+        # "[Errno 2] No such file or directory: ''").
+        missing_upstream = [
+            name for name, path in (("EDAAgent", eda_report_path), ("MLAgent", ml_report_path))
+            if not path
+        ]
+        if missing_upstream:
+            report_labels = "/".join(n.replace("Agent", "") for n in missing_upstream)
+            if len(missing_upstream) == 1:
+                reason = (
+                    f"Skipped: upstream {missing_upstream[0]} was skipped, "
+                    f"no {report_labels} report available"
+                )
+            else:
+                reason = (
+                    f"Skipped: upstream {' and '.join(missing_upstream)} were "
+                    f"skipped, no {report_labels} reports available"
+                )
+            result = self._skip_step("BusinessInsightsAgent", reason)
+        else:
+            insights_agent = BusinessInsightsAgent(
+                positive_label=positive_label, negative_label=negative_label, unit_label=unit_label,
+            )
+            result = self._execute_step(
+                "BusinessInsightsAgent",
+                lambda: insights_agent.run(
+                    eda_report_path=eda_report_path,
+                    ml_report_path=ml_report_path,
+                    output_dir=workspace_dir,
+                ),
+                completed, STEP_NAMES[6:],
+            )
         report.steps.append(result)
         completed.append(result.name)
         if result.status == "failed":
@@ -491,7 +580,7 @@ class OrchestratorAgent:
                 ml_report_path=ml_report_path or "",
                 insights_md_path=insights_md_path or "",
                 chart_paths=chart_paths,
-                output_path="workspace/executive_report.pdf",
+                output_path=report_output_path,
             ),
             completed, [],
         )
@@ -535,6 +624,13 @@ if __name__ == "__main__":
     parser.add_argument("--positive-label", default=None)
     parser.add_argument("--negative-label", default=None)
     parser.add_argument("--unit-label", default=None)
+    parser.add_argument(
+        "--run-id", default=None,
+        help="Namespace this run's model file and workspace outputs "
+        "(models/{run-id}_best_production_model.pkl, workspace/{run-id}/) "
+        "so a second dataset doesn't overwrite a prior run's results. "
+        "Omit to use the fixed default paths (unchanged behavior).",
+    )
     args = parser.parse_args()
 
     agent = OrchestratorAgent()
@@ -546,6 +642,7 @@ if __name__ == "__main__":
         positive_label=args.positive_label,
         negative_label=args.negative_label,
         unit_label=args.unit_label,
+        run_id=args.run_id,
     )
     print(json.dumps(agent.report_.to_dict(), indent=2))
     if success:

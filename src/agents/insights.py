@@ -792,6 +792,24 @@ class BusinessInsightsAgent:
             logger.error(msg)
             return False, msg
 
+        # Guard against an empty/blank path BEFORE attempting to open it --
+        # without this, a caller that forwards a skipped upstream step's
+        # missing output as "" gets a bare "[Errno 2] No such file or
+        # directory: ''" from the open() call below, which reads like an
+        # internal bug rather than the actual cause (no upstream report to
+        # summarize). The Orchestrator now skips this agent entirely rather
+        # than calling it with an empty path, but this guard keeps direct
+        # callers (CLI, tests, a future caller) from hitting that same
+        # confusing message.
+        if not eda_report_path or not eda_report_path.strip():
+            msg = "Missing required input: no EDA report path provided (e.g. the upstream EDAAgent step was skipped or failed)"
+            logger.error(msg)
+            return False, msg
+        if not ml_report_path or not ml_report_path.strip():
+            msg = "Missing required input: no ML report path provided (e.g. the upstream MLAgent step was skipped or failed)"
+            logger.error(msg)
+            return False, msg
+
         try:
             with open(eda_report_path) as f:
                 eda = json.load(f)

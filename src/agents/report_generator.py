@@ -640,7 +640,18 @@ def _build_html_document(
 # ---------------------------------------------------------------------------
 
 def _load_json_report(path: str, label: str, warnings: list) -> dict:
-    """Load a JSON report, returning {} and logging+recording a warning on failure."""
+    """Load a JSON report, returning {} and logging+recording a warning on failure.
+
+    An empty/blank path (the upstream step was skipped or failed) is
+    reported with its own clear message rather than falling through to
+    open("")'s bare "[Errno 2] No such file or directory: ''" -- that
+    reads like an internal bug, not "this section has no data."
+    """
+    if not path or not path.strip():
+        msg = f"{label} not available: no path provided (upstream step was likely skipped or failed)"
+        logger.warning(msg)
+        warnings.append(msg)
+        return {}
     try:
         with open(path) as f:
             return json.load(f)
@@ -712,19 +723,24 @@ class ReportGenerationAgent:
         insights_sections: dict = {
             "executive_summary": None, "business_insights": None, "recommendations": None,
         }
-        try:
-            with open(insights_md_path) as f:
-                md_text = f.read()
-            parsed = _parse_insights_markdown(md_text)
-            insights_sections = _map_insights_sections(parsed)
-            if not any(insights_sections.values()):
-                msg = f"Business insights markdown at {insights_md_path} had no parseable '## ' sections"
-                logger.warning(msg)
-                report.warnings.append(msg)
-        except Exception as exc:
-            msg = f"Could not load business insights markdown from {insights_md_path}: {exc}"
+        if not insights_md_path or not insights_md_path.strip():
+            msg = "Business insights markdown not available: no path provided (upstream BusinessInsightsAgent step was likely skipped or failed)"
             logger.warning(msg)
             report.warnings.append(msg)
+        else:
+            try:
+                with open(insights_md_path) as f:
+                    md_text = f.read()
+                parsed = _parse_insights_markdown(md_text)
+                insights_sections = _map_insights_sections(parsed)
+                if not any(insights_sections.values()):
+                    msg = f"Business insights markdown at {insights_md_path} had no parseable '## ' sections"
+                    logger.warning(msg)
+                    report.warnings.append(msg)
+            except Exception as exc:
+                msg = f"Could not load business insights markdown from {insights_md_path}: {exc}"
+                logger.warning(msg)
+                report.warnings.append(msg)
 
         executive_summary_html = (
             _markdown_to_html(insights_sections["executive_summary"])
