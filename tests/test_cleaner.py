@@ -23,6 +23,7 @@ from src.tools.data_tools import (
     DuplicateRemover,
     LowVarianceColumnDropper,
     MissingValueImputer,
+    PlaceholderNullNormalizer,
 )
 
 
@@ -51,6 +52,64 @@ def test_duplicate_remover_handles_empty_dataframe():
     remover = DuplicateRemover()
     result = remover.fit_transform(df)
     assert len(result) == 0
+
+
+# ---------------------------------------------------------------------------
+# PlaceholderNullNormalizer
+# ---------------------------------------------------------------------------
+
+def test_placeholder_normalizer_converts_known_placeholders_to_nan():
+    df = pd.DataFrame({"payment": ["Cash", "UNKNOWN", "ERROR", "Credit Card", "N/A"]})
+    normalizer = PlaceholderNullNormalizer()
+    result = normalizer.fit_transform(df)
+    assert result["payment"].isnull().sum() == 3
+    assert normalizer.placeholder_counts_["payment"] == 3
+
+
+def test_placeholder_normalizer_then_imputer_fills_placeholders_with_mode():
+    df = pd.DataFrame({"payment": ["Cash", "Cash", "Cash", "UNKNOWN", "ERROR"]})
+    normalizer = PlaceholderNullNormalizer()
+    normalized = normalizer.fit_transform(df)
+    imputer = MissingValueImputer()
+    result = imputer.fit_transform(normalized)
+    assert result["payment"].isnull().sum() == 0
+    assert (result["payment"] == "Cash").all()
+
+
+def test_placeholder_normalizer_is_case_insensitive():
+    df = pd.DataFrame({"col": ["Unknown", "UNKNOWN", "unknown", "real_value"]})
+    normalizer = PlaceholderNullNormalizer()
+    result = normalizer.fit_transform(df)
+    assert result["col"].isnull().sum() == 3
+    assert result["col"].iloc[3] == "real_value"
+
+
+def test_placeholder_normalizer_leaves_non_matching_values_alone():
+    df = pd.DataFrame({"code": ["AB-12", "CD-34", "real category", "-error-"]})
+    normalizer = PlaceholderNullNormalizer()
+    result = normalizer.fit_transform(df)
+    # None of these are EXACT matches to a placeholder, so nothing changes
+    assert result["code"].isnull().sum() == 0
+    assert list(result["code"]) == list(df["code"])
+
+
+def test_placeholder_normalizer_leaves_numeric_columns_untouched():
+    df = pd.DataFrame({"amount": [1, 2, 3]})
+    normalizer = PlaceholderNullNormalizer()
+    result = normalizer.fit_transform(df)
+    assert result["amount"].isnull().sum() == 0
+    assert "amount" not in normalizer.placeholder_counts_
+
+
+def test_placeholder_normalizer_supports_custom_placeholder_list():
+    df = pd.DataFrame({"col": ["MISSING", "TBD", "real_value", "UNKNOWN"]})
+    normalizer = PlaceholderNullNormalizer(placeholder_values=["missing", "tbd"])
+    result = normalizer.fit_transform(df)
+    # Custom list only catches "MISSING"/"TBD" -- "UNKNOWN" is left alone
+    # since it's not in the custom list.
+    assert result["col"].isnull().sum() == 2
+    assert result["col"].iloc[2] == "real_value"
+    assert result["col"].iloc[3] == "UNKNOWN"
 
 
 # ---------------------------------------------------------------------------
@@ -193,3 +252,25 @@ def test_agent_writes_report_json(sample_csv, tmp_path):
 
     report_path = str(tmp_path / "sample_cleaned_report.json")
     assert os.path.exists(report_path)
+
+
+def test_agent_normalizes_placeholders_before_imputing(tmp_path):
+    df = pd.DataFrame({
+        "order_id": [1, 2, 3, 4, 5, 6, 7],
+        "payment_method": ["Cash", "Cash", "Cash", "Credit Card", "Credit Card", "UNKNOWN", "ERROR"],
+    })
+    csv_path = tmp_path / "placeholders.csv"
+    df.to_csv(csv_path, index=False)
+
+    agent = DataCleaningAgent()
+    output_path = str(tmp_path / "placeholders_cleaned.csv")
+    success, result_path = agent.run(str(csv_path), output_path=output_path)
+
+    assert success is True
+    assert agent.report_.placeholder_values_normalized.get("payment_method") == 2
+
+    cleaned = pd.read_csv(result_path)
+    assert "UNKNOWN" not in cleaned["payment_method"].values
+    assert "ERROR" not in cleaned["payment_method"].values
+    assert cleaned["payment_method"].isnull().sum() == 0
+    assert (cleaned["payment_method"] == "Cash").sum() == 5  # 3 genuine + 2 imputed placeholders
