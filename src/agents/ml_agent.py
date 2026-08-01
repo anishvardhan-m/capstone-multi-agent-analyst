@@ -1579,6 +1579,7 @@ class MLAgent:
         group_col: Optional[str] = None,
         random_state: Optional[int] = None,
         save_model: bool = True,
+        model_output_path: Optional[str] = None,
     ) -> tuple[bool, Optional["MLReport"], Optional[str]]:
         """Shared guts of run() and run_robustness_check() (handbook F7):
         load the CSV, build the feature matrix, split, and train/evaluate.
@@ -1587,6 +1588,13 @@ class MLAgent:
         with random_state overridden and save_model=False, without
         duplicating the data-prep logic or writing N throwaway reports/
         models to disk. Returns (success, report_or_None, error_or_None).
+
+        model_output_path : str | None
+            Passed straight through to where the winning model gets
+            serialized. None resolves to the fixed default path (see
+            run()'s docstring); a caller (e.g. the Orchestrator, when
+            given a run_id) can override it to keep two datasets' models
+            from colliding.
         """
         logger.info(
             "Starting ML run on %s  target=%s  id_col=%s  group_col=%s  "
@@ -1669,7 +1677,8 @@ class MLAgent:
                     len(overlap), effective_group_col,
                 )
 
-        model_output_path = os.path.join(_MODEL_DIR, "best_production_model.pkl")
+        if model_output_path is None:
+            model_output_path = os.path.join(_MODEL_DIR, "best_production_model.pkl")
 
         try:
             report = self._train_and_evaluate(
@@ -1691,6 +1700,7 @@ class MLAgent:
         target_col: str,
         id_col: Optional[str] = None,
         group_col: Optional[str] = None,
+        model_output_path: Optional[str] = None,
     ) -> tuple[bool, str]:
         """Run the full ML pipeline on a CSV file.
 
@@ -1714,6 +1724,13 @@ class MLAgent:
             feature matrix (an identifier is not itself a business
             feature). Falls back to the plain stratified split with a
             logged warning if the column isn't present in the data.
+        model_output_path : str | None
+            Where to serialize the winning model. Defaults to None, which
+            resolves to the fixed `models/best_production_model.pkl` path
+            (unchanged default behavior -- the dashboard and the Olist demo
+            depend on this exact path). Pass an explicit path (e.g. a
+            run-id-namespaced one) so a second dataset's model doesn't
+            silently overwrite the first's.
 
         Returns
         -------
@@ -1721,6 +1738,7 @@ class MLAgent:
         """
         success, report, error = self._prepare_and_train(
             data_path, target_col, id_col=id_col, group_col=group_col,
+            model_output_path=model_output_path,
         )
         if not success:
             return False, error
