@@ -238,6 +238,19 @@ def _fmt_list(items: Optional[list]) -> str:
     return ", ".join(str(i) for i in items) if items else "None"
 
 
+def _fmt_placeholder_counts(counts: Optional[dict]) -> str:
+    """Format per-column placeholder-normalization counts as a single
+    string: a total up front, then the per-column breakdown sorted
+    highest-count first."""
+    if not counts:
+        return "None"
+    total = sum(counts.values())
+    breakdown = ", ".join(
+        f"{col}: {n:,}" for col, n in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+    )
+    return f"{total:,} total ({breakdown})"
+
+
 def _build_data_diagnostics_html(cleaning: dict) -> str:
     if not cleaning:
         return "<p class='placeholder'>Data diagnostics unavailable (cleaning report missing or unreadable).</p>"
@@ -246,6 +259,7 @@ def _build_data_diagnostics_html(cleaning: dict) -> str:
         ("Input shape", _fmt_shape(cleaning.get("input_shape"))),
         ("Output shape", _fmt_shape(cleaning.get("output_shape"))),
         ("Duplicate rows removed", f"{cleaning.get('n_duplicates_removed', 0):,}"),
+        ("Placeholder values normalized", _fmt_placeholder_counts(cleaning.get("placeholder_values_normalized"))),
         ("High-missing columns flagged", _fmt_list(cleaning.get("high_missing_columns_flagged"))),
         ("Low-variance columns dropped", _fmt_list(cleaning.get("low_variance_columns_dropped"))),
         ("Columns type-corrected", _fmt_list(cleaning.get("columns_type_corrected"))),
