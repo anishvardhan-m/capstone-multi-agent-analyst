@@ -238,12 +238,27 @@ def _fmt_list(items: Optional[list]) -> str:
     return ", ".join(str(i) for i in items) if items else "None"
 
 
+def _fmt_placeholder_counts(counts: Optional[dict]) -> str:
+    """Format the per-column placeholder-normalization counts as a single
+    display string: a total up front (so the reader immediately sees a
+    nonzero number, not just a wall of column names) followed by the
+    per-column breakdown sorted highest-count first."""
+    if not counts:
+        return "None"
+    total = sum(counts.values())
+    breakdown = ", ".join(
+        f"{col}: {n:,}" for col, n in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+    )
+    return f"{total:,} total ({breakdown})"
+
+
 def cleaning_report_rows(report: dict) -> list:
     """Flatten a CleaningReport dict into (label, value) display rows."""
     return [
         ("Input shape", _fmt_shape(report.get("input_shape"))),
         ("Output shape", _fmt_shape(report.get("output_shape"))),
         ("Duplicate rows removed", f"{report.get('n_duplicates_removed', 0):,}"),
+        ("Placeholder values normalized", _fmt_placeholder_counts(report.get("placeholder_values_normalized"))),
         ("High-missing columns flagged", _fmt_list(report.get("high_missing_columns_flagged"))),
         ("Low-variance columns dropped", _fmt_list(report.get("low_variance_columns_dropped"))),
         ("Columns type-corrected", _fmt_list(report.get("columns_type_corrected"))),
