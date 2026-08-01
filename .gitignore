@@ -34,6 +34,16 @@ workspace/metadata/*.db
 !workspace/visualizations/*.png
 !workspace/metadata/audit_telemetry.db
 
+# run_id-namespaced workspace outputs (workspace/<run_id>/...): every
+# dataset run through the Dataset Ingestion page with a run_id gets its
+# own charts/PDF/narrative here. Unlike the Olist demo's fixed top-level
+# paths above, these are per-run artifacts never meant to be committed --
+# without this, they're untracked but NOT ignored, so an unqualified
+# `git add -A` would sweep in large per-dataset binaries.
+workspace/*/visualizations/*.png
+workspace/*/*.pdf
+workspace/*/*.md
+
 # OS / editor
 .DS_Store
 .vscode/

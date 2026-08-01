@@ -46,10 +46,14 @@ Eight agent classes exist: `DataCleaningAgent`, `EDAAgent`,
   correction, low-variance column dropping.
 - **I/O**: `run(data_path, output_path=None) -> (success, output_csv_path)`.
   Writes `<stem>_cleaned.csv` and `<stem>_cleaned_report.json`.
-- **Implementation**: a `sklearn.pipeline.Pipeline` of four custom
+- **Implementation**: a `sklearn.pipeline.Pipeline` of five custom
   transformers from `src/tools/data_tools.py`, in order:
-  `DuplicateRemover` → `DataTypeCorrector` → `MissingValueImputer` →
-  `LowVarianceColumnDropper`.
+  `DuplicateRemover` → `PlaceholderNullNormalizer` → `DataTypeCorrector` →
+  `MissingValueImputer` → `LowVarianceColumnDropper`.
+  `PlaceholderNullNormalizer` runs before the imputer so common
+  placeholder strings (`"UNKNOWN"`, `"ERROR"`, `"N/A"`, etc.) are
+  converted to real `NaN` first, instead of being imputed as if they were
+  legitimate categories.
 - **Key design decision**: fully deterministic, no LLM call. See
   Section 7 for the reasoning shared across all five deterministic
   agents.
@@ -89,9 +93,13 @@ Eight agent classes exist: `DataCleaningAgent`, `EDAAgent`,
   final refit + held-out evaluation, calibration diagnostics,
   permutation-importance feature ranking, segment-level error analysis,
   optional multi-seed robustness check.
-- **I/O**: `run(data_path, target_col, id_col=None, group_col=None) ->
-  (success, report_json_path)`. Writes `<stem>_ml_report.json` and
-  `models/best_production_model.pkl`; also appends one row to the
+- **I/O**: `run(data_path, target_col, id_col=None, group_col=None,
+  model_output_path=None) -> (success, report_json_path)`. Writes
+  `<stem>_ml_report.json` and, by default, `models/best_production_model.pkl`;
+  `model_output_path` overrides that fixed path (e.g. to
+  `models/{run_id}_best_production_model.pkl`, what `OrchestratorAgent`
+  passes when given a `run_id` — see Section 2.8) so a second dataset's
+  model doesn't silently overwrite the first's. Also appends one row to the
   `ml_experiments` SQLite table (Section 6). A second entry point,
   `run_robustness_check(data_path, target_col, id_col=None, group_col=None,
   seeds=(42, 7, 123, 2024, 99))`, writes `<stem>_robustness_report.json`
@@ -174,11 +182,29 @@ Eight agent classes exist: `DataCleaningAgent`, `EDAAgent`,
   agent's output path into the next agent's input, and apply
   LLM-classified retry/skip/abort recovery on any step failure.
 - **I/O**: `run(data_path, target_col, id_col=None, group_col=None,
-  positive_label=None, negative_label=None, unit_label=None) ->
-  (success, final_pdf_path_or_abort_reason)`.
+  positive_label=None, negative_label=None, unit_label=None,
+  run_id=None) -> (success, final_pdf_path_or_abort_reason)`. `run_id`
+  namespaces the model file and workspace outputs
+  (`models/{run_id}_best_production_model.pkl`, `workspace/{run_id}/`)
+  so a second dataset never clobbers a prior run's results; omitting it
+  reproduces the fixed default paths the dashboard and the Olist demo
+  depend on.
 - **Key design decision**: this is the second LLM-calling agent, but for
   a structurally different purpose than BusinessInsightsAgent — it
   never touches the data itself; it classifies *failures*. See Section 4.
+- **Deterministic cascading skips**: `BusinessInsightsAgent` requires
+  both the EDA and ML reports to produce a grounded narrative (its
+  prompt branches on the ML report's `task_type`, so there's no
+  meaningful "EDA-only" fallback). When either upstream report is
+  unavailable (that step was itself skipped or failed), the Orchestrator
+  skips `BusinessInsightsAgent` outright — with a clear, specific reason
+  (e.g. `"Skipped: upstream MLAgent was skipped, no ML report
+  available"`) recorded both in the step result and the audit log — 
+  rather than calling it with an empty path and routing a
+  fully-determined outcome through the LLM recovery classifier.
+  `VisualizationAgent` and `ReportGenerationAgent` are not skipped this
+  way: both already degrade gracefully in place (partial charts,
+  placeholder report sections) when an upstream report is missing.
 
 ### 2.9 The CrewAI/LangChain deviation
 
@@ -234,7 +260,8 @@ copied directly from source, not paraphrased.
   "low_variance_columns_dropped": [],
   "columns_type_corrected": [],
   "numeric_columns_imputed": [],
-  "categorical_columns_imputed": []
+  "categorical_columns_imputed": [],
+  "placeholder_values_normalized": { "col": 0 }
 }
 ```
 
@@ -683,7 +710,7 @@ system" for:
   there is no LLM-call failure mode (rate limit, hallucinated output,
   model drift between provider updates) anywhere in the data-processing
   path itself.
-- **Testability.** 372 unit/integration tests exercise agent *behavior*
+- **Testability.** 384 unit/integration tests exercise agent *behavior*
   directly — pipeline branching, threshold edge cases, graceful
   degradation on malformed input — without needing to mock an LLM at
   every layer or accept flaky, non-deterministic test assertions.

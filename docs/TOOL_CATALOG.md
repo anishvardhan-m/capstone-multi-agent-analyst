@@ -49,6 +49,39 @@ def transform(self, X: pd.DataFrame) -> pd.DataFrame
   `::test_duplicate_remover_handles_no_duplicates`,
   `::test_duplicate_remover_handles_empty_dataframe`.
 
+### `class PlaceholderNullNormalizer(BaseEstimator, TransformerMixin)`
+
+```python
+def __init__(self, placeholder_values: Optional[list[str]] = None)
+def fit(self, X: pd.DataFrame, y=None) -> "PlaceholderNullNormalizer"
+def transform(self, X: pd.DataFrame) -> pd.DataFrame
+```
+
+- **Does**: converts placeholder "fake null" strings (e.g. `"UNKNOWN"`,
+  `"ERROR"`, `"N/A"`) into real `NaN` on object/string-dtype columns, so
+  `MissingValueImputer` — which only recognizes true `NaN`/null — picks
+  them up correctly instead of treating them as legitimate categories.
+  Runs before `MissingValueImputer` in `DataCleaningAgent`'s pipeline.
+  Matching is case-insensitive and whitespace-stripped, but requires an
+  EXACT match — a value is never swapped for containing a placeholder as
+  a substring, so a genuine short value (e.g. a real category that
+  happens to be `"-"`) is only affected when it equals a listed
+  placeholder exactly. Numeric columns are never touched.
+- **Params**: `placeholder_values: list[str] | None = None` — defaults to
+  `["unknown", "error", "n/a", "na", "none", "null", "-", "--", ""]`.
+- **Output**: a `pd.DataFrame` with matching placeholder values replaced
+  by `NaN`. Fitted attribute `placeholder_counts_: dict` (col → count of
+  placeholder values converted in that column).
+- **Leakage note**: `fit` is a no-op — which strings count as
+  placeholders is a fixed, caller-supplied list, not a statistic learned
+  from data, so this transformer is leakage-safe by construction.
+- **Tested in**: `tests/test_cleaner.py::test_placeholder_normalizer_converts_known_placeholders_to_nan`,
+  `::test_placeholder_normalizer_then_imputer_fills_placeholders_with_mode`,
+  `::test_placeholder_normalizer_is_case_insensitive`,
+  `::test_placeholder_normalizer_leaves_non_matching_values_alone`,
+  `::test_placeholder_normalizer_leaves_numeric_columns_untouched`,
+  `::test_placeholder_normalizer_supports_custom_placeholder_list`.
+
 ### `class MissingValueImputer(BaseEstimator, TransformerMixin)`
 
 ```python
