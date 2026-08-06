@@ -214,6 +214,22 @@ class MLReport:
         points when the test set is larger (affects only how many points
         the Visualization Agent's actual-vs-predicted/residual scatter
         plots draw, not any reported metric).
+    test_predictions_table : dict | None
+        Per-record held-out predictions for the dashboard (generic across
+        task types, populated for BOTH classification and regression --
+        unlike test_predictions above, which is regression-only and feeds
+        the Visualization Agent's scatter plots instead). Shape:
+        {"task_type", "id_col", "columns", "rows", "total_test_rows",
+        "sampled", "sample_size", "note"}. Each row in "rows" has a
+        "row_id" (the id_col value for that test row when id_col was
+        given and present in the data, otherwise that row's positional
+        index in the input CSV) plus, for classification:
+        "actual_label"/"predicted_label"/"confidence" (predict_proba of
+        the predicted class, None if the model has no predict_proba) /
+        "correct"; for regression: "actual_value"/"predicted_value"/
+        "error"/"abs_error". Capped at _MAX_TEST_PREDICTIONS_TABLE rows --
+        a fixed-seed random sample when the test set is larger, with
+        "sampled"=True and a note recording it.
     split_strategy : str
         "grouped" when the train/test split was built with GroupShuffleSplit
         so no single group_col value (e.g. a repeat customer) appears in
@@ -275,6 +291,7 @@ class MLReport:
     feature_importances: dict = field(default_factory=dict)
     error_analysis: dict = field(default_factory=dict)
     test_predictions: Optional[dict] = None
+    test_predictions_table: Optional[dict] = None
     split_strategy: str = "row_random"
     group_col: Optional[str] = None
     cv_fold_scores: dict = field(default_factory=dict)
@@ -301,6 +318,7 @@ class MLReport:
             "feature_importances": self.feature_importances,
             "error_analysis": self.error_analysis,
             "test_predictions": self.test_predictions,
+            "test_predictions_table": self.test_predictions_table,
             "split_strategy": self.split_strategy,
             "group_col": self.group_col,
             "cv_fold_scores": self.cv_fold_scores,
@@ -1142,6 +1160,91 @@ def _build_test_predictions(
     }
 
 
+_MAX_TEST_PREDICTIONS_TABLE = 5000
+
+
+def _build_test_predictions_table(
+    row_ids: np.ndarray,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    task_type: str,
+    confidence: Optional[np.ndarray] = None,
+    id_col: Optional[str] = None,
+    max_rows: int = _MAX_TEST_PREDICTIONS_TABLE,
+    random_state: int = _RANDOM_STATE,
+) -> dict:
+    """Package per-record held-out predictions for the dashboard.
+
+    Generic across task types by construction: the row identity (row_ids)
+    and the mechanism (build a list of row dicts, cap/sample if too many)
+    are identical for classification and regression -- only the metric
+    columns differ (actual_label/predicted_label/confidence/correct vs.
+    actual_value/predicted_value/error/abs_error). row_ids is whatever the
+    caller resolved id_col to: the id_col column's values when id_col was
+    given and present in the data, otherwise each row's positional index
+    in the input CSV -- either way this function treats it as an opaque
+    identifier and never assumes a particular dtype or column name.
+
+    Capped at max_rows via a fixed-seed random sample (not a head/tail
+    slice) so the sample isn't skewed toward whatever order the test rows
+    happened to fall in after the train/test split.
+    """
+    n = len(y_true)
+    is_classification = task_type in ("binary_classification", "multiclass_classification")
+    row_ids_arr = np.asarray(row_ids)
+
+    sampled = n > max_rows
+    if sampled:
+        order = np.sort(np.random.default_rng(random_state).choice(n, max_rows, replace=False))
+    else:
+        order = np.arange(n)
+
+    rows: list[dict] = []
+    for i in order:
+        row: dict = {"row_id": _json_safe_scalar(row_ids_arr[i])}
+        if is_classification:
+            correct = bool(y_true[i] == y_pred[i])
+            row["actual_label"] = _json_safe_scalar(y_true[i])
+            row["predicted_label"] = _json_safe_scalar(y_pred[i])
+            row["confidence"] = (
+                round(float(confidence[i]), 6) if confidence is not None else None
+            )
+            row["correct"] = correct
+        else:
+            actual = float(y_true[i])
+            predicted = float(y_pred[i])
+            row["actual_value"] = round(actual, 6)
+            row["predicted_value"] = round(predicted, 6)
+            row["error"] = round(predicted - actual, 6)
+            row["abs_error"] = round(abs(predicted - actual), 6)
+        rows.append(row)
+
+    columns = (
+        ["row_id", "actual_label", "predicted_label", "confidence", "correct"]
+        if is_classification
+        else ["row_id", "actual_value", "predicted_value", "error", "abs_error"]
+    )
+
+    note = (
+        f"Sampled {max_rows} of {n} held-out test rows (fixed seed={random_state}) "
+        "to keep the report size manageable -- the CSV download and dashboard "
+        "table below reflect only this sample, not the full test set."
+        if sampled else
+        f"All {n} held-out test rows are included."
+    )
+
+    return {
+        "task_type": task_type,
+        "id_col": id_col,
+        "columns": columns,
+        "rows": rows,
+        "total_test_rows": n,
+        "sampled": sampled,
+        "sample_size": len(rows),
+        "note": note,
+    }
+
+
 def _split_indices(
     n_rows: int,
     y: pd.Series,
@@ -1396,6 +1499,8 @@ class MLAgent:
         group_col: Optional[str] = None,
         random_state: Optional[int] = None,
         save_model: bool = True,
+        id_col: Optional[str] = None,
+        row_ids_test: Optional[np.ndarray] = None,
     ) -> MLReport:
         """random_state defaults to self.random_state when None -- a
         robustness check across seeds (handbook F7) passes an explicit
@@ -1403,6 +1508,15 @@ class MLAgent:
         save_model=False skips serialising to model_output_path: a
         robustness-check run is exploratory and must never overwrite the
         one canonical production model on disk.
+
+        row_ids_test : np.ndarray | None
+            Per-test-row identifiers for test_predictions_table, aligned
+            positionally with X_test/y_test. The caller (_prepare_and_train)
+            resolves this to id_col's values when given and present in the
+            data, otherwise each row's positional index -- this method
+            never makes that decision itself, it just labels rows with
+            whatever it's given. id_col is carried through only to record
+            in the report which column (if any) row_id came from.
         """
         rs = self.random_state if random_state is None else random_state
         is_classification = task_type in ("binary_classification", "multiclass_classification")
@@ -1490,8 +1604,24 @@ class MLAgent:
         detection_note = _segment_detection_note(segment_cols, auto_detected=not self.segment_cols)
         logger.info("Error analysis: %s", detection_note)
 
+        row_ids = row_ids_test if row_ids_test is not None else np.arange(len(X_test))
+
         if is_classification:
             test_metrics, cm = _eval_classification(best_model, X_test, y_test, task_type)
+            y_pred_clf = np.asarray(best_model.predict(X_test))
+            confidence = None
+            if hasattr(best_model, "predict_proba"):
+                try:
+                    proba = best_model.predict_proba(X_test)
+                    class_to_idx = {c: i for i, c in enumerate(best_model.classes_)}
+                    pred_idx = np.array([class_to_idx[p] for p in y_pred_clf])
+                    confidence = proba[np.arange(len(y_pred_clf)), pred_idx]
+                except Exception:
+                    confidence = None
+            test_predictions_table = _build_test_predictions_table(
+                row_ids, np.asarray(y_test), y_pred_clf, task_type,
+                confidence=confidence, id_col=id_col, random_state=rs,
+            )
             error_analysis = _error_analysis_classification(
                 best_model, X_test, y_test, segment_cols, task_type,
             )
@@ -1526,6 +1656,7 @@ class MLAgent:
                 threshold_metrics=threshold_metrics,
                 feature_importances=feature_importances,
                 error_analysis=error_analysis,
+                test_predictions_table=test_predictions_table,
                 split_strategy=split_strategy,
                 group_col=group_col,
                 cv_fold_scores=cv_fold_scores,
@@ -1542,6 +1673,10 @@ class MLAgent:
             test_metrics, y_pred = _eval_regression(best_model, X_test, y_test)
             logger.info("Test metrics: %s", test_metrics)
             test_predictions = _build_test_predictions(y_test, y_pred, random_state=rs)
+            test_predictions_table = _build_test_predictions_table(
+                row_ids, np.asarray(y_test, dtype=float), y_pred, task_type,
+                id_col=id_col, random_state=rs,
+            )
             error_analysis = _error_analysis_regression(X_test, y_test, y_pred, segment_cols)
             error_analysis["detection_note"] = detection_note
             return MLReport(
@@ -1556,6 +1691,7 @@ class MLAgent:
                 feature_importances=feature_importances,
                 error_analysis=error_analysis,
                 test_predictions=test_predictions,
+                test_predictions_table=test_predictions_table,
                 split_strategy=split_strategy,
                 group_col=group_col,
                 cv_fold_scores=cv_fold_scores,
@@ -1627,10 +1763,26 @@ class MLAgent:
                 )
 
         drop_cols = [target_col]
+        effective_id_col: Optional[str] = None
         if id_col and id_col in df.columns:
             drop_cols.append(id_col)
+            effective_id_col = id_col
+        else:
+            if id_col:
+                logger.warning(
+                    "id_col '%s' not found in data; falling back to each row's "
+                    "positional index as its identifier in test_predictions_table.",
+                    id_col,
+                )
         if effective_group_col and effective_group_col not in drop_cols:
             drop_cols.append(effective_group_col)
+
+        # Row identifiers for test_predictions_table -- the id_col's own
+        # values when usable, otherwise each row's positional index in this
+        # CSV (works identically whether or not the caller supplied id_col).
+        row_id_values = (
+            df[effective_id_col].to_numpy() if effective_id_col else np.arange(len(df))
+        )
 
         X = df.drop(columns=drop_cols)
         y = df[target_col]
@@ -1658,6 +1810,7 @@ class MLAgent:
         )
         X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
         y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+        row_ids_test = row_id_values[test_idx]
         split_strategy = "grouped" if effective_group_col else "row_random"
         logger.info(
             "Train size: %d  Test size: %d  split_strategy=%s",
@@ -1686,6 +1839,7 @@ class MLAgent:
                 task_type, feature_names, model_output_path, target_col=target_col,
                 split_strategy=split_strategy, group_col=effective_group_col,
                 random_state=rs, save_model=save_model,
+                id_col=effective_id_col, row_ids_test=row_ids_test,
             )
         except Exception as exc:
             logger.error("ML pipeline failed: %s", exc, exc_info=True)
@@ -1711,7 +1865,11 @@ class MLAgent:
         target_col : str
             Name of the column to predict.
         id_col : str | None
-            Row-identifier column to exclude from features.
+            Row-identifier column to exclude from features. Also used to
+            label rows in test_predictions_table (the per-record
+            predictions the dashboard shows); when omitted, or when given
+            but not present in the data, each test row is labeled with its
+            positional index in the input CSV instead.
         group_col : str | None
             A column identifying which rows belong to the same real-world
             entity (e.g. a repeat-customer ID where one customer can place

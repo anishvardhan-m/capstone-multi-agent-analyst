@@ -163,6 +163,77 @@ else:
     st.dataframe(importances_df, use_container_width=True, hide_index=True)
     st.bar_chart(importances_df.set_index("feature")["importance_mean"])
 
+st.subheader("Per-Record Predictions")
+preds_table = report.get("test_predictions_table")
+preds_df = dh.ml_predictions_table_df(report)
+if preds_df is None or preds_df.empty:
+    st.caption("No per-record predictions recorded for this run.")
+else:
+    st.caption(preds_table.get("note", ""))
+
+    fcol1, fcol2 = st.columns([2, 1])
+    search_query = fcol1.text_input(
+        "Search row ID", key="ml_studio_pred_search",
+        placeholder="e.g. a specific order/row ID",
+    )
+    filtered_df = dh.search_predictions_df(preds_df, search_query)
+
+    is_classification_table = "correct" in filtered_df.columns
+    if is_classification_table:
+        show_incorrect_only = fcol2.checkbox(
+            "Show only incorrect predictions", key="ml_studio_pred_incorrect_only",
+        )
+        if show_incorrect_only:
+            filtered_df = dh.filter_incorrect_predictions(filtered_df)
+
+        confidence_caveat = dh.calibration_caveat(report)
+        if confidence_caveat:
+            st.caption(
+                f"{confidence_caveat} See **Calibration** below for this run's "
+                "measured calibration error."
+            )
+        else:
+            st.caption(
+                "This model uses class-weighted training, so the 'confidence' "
+                "column above is not a literal probability -- treat it as a "
+                "relative ranking signal, not a calibrated percentage chance."
+            )
+    elif "abs_error" in filtered_df.columns:
+        max_possible_error = float(filtered_df["abs_error"].max())
+        min_abs_error = fcol2.number_input(
+            "Min. absolute error", min_value=0.0, max_value=max_possible_error,
+            value=0.0, key="ml_studio_pred_min_error",
+        )
+        if min_abs_error > 0:
+            filtered_df = dh.filter_large_error_predictions(filtered_df, min_abs_error)
+
+    st.download_button(
+        "Download predictions table (CSV)",
+        data=preds_df.to_csv(index=False).encode("utf-8"),
+        file_name="test_predictions_table.csv",
+        mime="text/csv",
+        help="Downloads the full captured predictions table (see note above "
+             "if it was sampled), not just the current filtered/paginated view.",
+    )
+
+    page_size = 50
+    total_rows = len(filtered_df)
+    if total_rows == 0:
+        st.caption("No rows match the current search/filter.")
+    else:
+        n_pages = -(-total_rows // page_size)
+        page = st.number_input(
+            "Page", min_value=1, max_value=max(1, n_pages), value=1, step=1,
+            key="ml_studio_pred_page",
+        )
+        page_df = dh.paginate_df(filtered_df, int(page), page_size)
+        st.dataframe(page_df, use_container_width=True, hide_index=True)
+        start = (int(page) - 1) * page_size
+        st.caption(
+            f"Showing rows {start + 1}-{min(start + page_size, total_rows)} of "
+            f"{total_rows} (page {page} of {n_pages})."
+        )
+
 st.subheader("Error Analysis by Segment")
 error_analysis = report.get("error_analysis") or {}
 error_df = dh.ml_error_analysis_df(report)

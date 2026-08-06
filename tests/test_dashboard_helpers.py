@@ -409,6 +409,112 @@ def test_ml_test_predictions_df_none_for_classification():
     assert dh.ml_test_predictions_df({}) is None
 
 
+# ---------------------------------------------------------------------------
+# Per-record predictions table (test_predictions_table) -- generic across
+# task types, powers the ML Studio "Per-Record Predictions" section.
+# ---------------------------------------------------------------------------
+
+_CLASSIFICATION_TABLE = {
+    "task_type": "binary_classification",
+    "id_col": "order_id",
+    "columns": ["row_id", "actual_label", "predicted_label", "confidence", "correct"],
+    "rows": [
+        {"row_id": "o1", "actual_label": 1, "predicted_label": 1, "confidence": 0.91, "correct": True},
+        {"row_id": "o2", "actual_label": 0, "predicted_label": 1, "confidence": 0.60, "correct": False},
+        {"row_id": "o3", "actual_label": 0, "predicted_label": 0, "confidence": 0.88, "correct": True},
+    ],
+    "total_test_rows": 3,
+    "sampled": False,
+    "sample_size": 3,
+    "note": "All 3 held-out test rows are included.",
+}
+
+_REGRESSION_TABLE = {
+    "task_type": "regression",
+    "id_col": None,
+    "columns": ["row_id", "actual_value", "predicted_value", "error", "abs_error"],
+    "rows": [
+        {"row_id": 0, "actual_value": 10.0, "predicted_value": 11.0, "error": 1.0, "abs_error": 1.0},
+        {"row_id": 1, "actual_value": 20.0, "predicted_value": 15.0, "error": -5.0, "abs_error": 5.0},
+        {"row_id": 2, "actual_value": 30.0, "predicted_value": 30.5, "error": 0.5, "abs_error": 0.5},
+    ],
+    "total_test_rows": 3,
+    "sampled": False,
+    "sample_size": 3,
+    "note": "All 3 held-out test rows are included.",
+}
+
+
+def test_ml_predictions_table_df_classification():
+    df = dh.ml_predictions_table_df({"test_predictions_table": _CLASSIFICATION_TABLE})
+    assert list(df.columns) == _CLASSIFICATION_TABLE["columns"]
+    assert len(df) == 3
+    assert df.iloc[0]["row_id"] == "o1"
+
+
+def test_ml_predictions_table_df_none_when_absent():
+    assert dh.ml_predictions_table_df({}) is None
+    assert dh.ml_predictions_table_df({"test_predictions_table": None}) is None
+    assert dh.ml_predictions_table_df({"test_predictions_table": {"rows": []}}) is None
+
+
+def test_filter_incorrect_predictions_classification():
+    df = dh.ml_predictions_table_df({"test_predictions_table": _CLASSIFICATION_TABLE})
+    filtered = dh.filter_incorrect_predictions(df)
+    assert list(filtered["row_id"]) == ["o2"]
+
+
+def test_filter_incorrect_predictions_noop_for_regression():
+    df = dh.ml_predictions_table_df({"test_predictions_table": _REGRESSION_TABLE})
+    filtered = dh.filter_incorrect_predictions(df)
+    assert len(filtered) == len(df)
+
+
+def test_filter_large_error_predictions_regression():
+    df = dh.ml_predictions_table_df({"test_predictions_table": _REGRESSION_TABLE})
+    filtered = dh.filter_large_error_predictions(df, min_abs_error=1.0)
+    assert list(filtered["row_id"]) == [0, 1]
+
+
+def test_filter_large_error_predictions_noop_for_classification():
+    df = dh.ml_predictions_table_df({"test_predictions_table": _CLASSIFICATION_TABLE})
+    filtered = dh.filter_large_error_predictions(df, min_abs_error=1.0)
+    assert len(filtered) == len(df)
+
+
+def test_search_predictions_df_matches_substring_case_insensitively():
+    df = dh.ml_predictions_table_df({"test_predictions_table": _CLASSIFICATION_TABLE})
+    filtered = dh.search_predictions_df(df, "O2")
+    assert list(filtered["row_id"]) == ["o2"]
+
+
+def test_search_predictions_df_empty_query_returns_all():
+    df = dh.ml_predictions_table_df({"test_predictions_table": _CLASSIFICATION_TABLE})
+    assert len(dh.search_predictions_df(df, "")) == len(df)
+    assert len(dh.search_predictions_df(df, "   ")) == len(df)
+
+
+def test_paginate_df_splits_into_pages():
+    df = pd.DataFrame({"row_id": list(range(25))})
+    page1 = dh.paginate_df(df, page=1, page_size=10)
+    page2 = dh.paginate_df(df, page=2, page_size=10)
+    page3 = dh.paginate_df(df, page=3, page_size=10)
+    assert list(page1["row_id"]) == list(range(0, 10))
+    assert list(page2["row_id"]) == list(range(10, 20))
+    assert list(page3["row_id"]) == list(range(20, 25))
+
+
+def test_paginate_df_clamps_out_of_range_page():
+    df = pd.DataFrame({"row_id": list(range(5))})
+    assert list(dh.paginate_df(df, page=99, page_size=10)["row_id"]) == list(range(5))
+    assert list(dh.paginate_df(df, page=0, page_size=10)["row_id"]) == list(range(5))
+
+
+def test_paginate_df_empty_dataframe():
+    df = pd.DataFrame({"row_id": []})
+    assert dh.paginate_df(df, page=1, page_size=10).empty
+
+
 def test_calibration_caveat_shown_for_binary_classification():
     report = {"task_type": "binary_classification"}
     caveat = dh.calibration_caveat(report)

@@ -453,6 +453,62 @@ def ml_test_predictions_df(report: dict, max_rows: int = 25) -> Optional[pd.Data
     return df.head(max_rows)
 
 
+def ml_predictions_table_df(report: dict) -> Optional[pd.DataFrame]:
+    """Per-record held-out predictions (test_predictions_table), as a
+    DataFrame -- generic across task types, unlike ml_test_predictions_df
+    above (regression only). Column set follows whatever MLReport recorded
+    for this run's task type: row_id + actual_label/predicted_label/
+    confidence/correct for classification, row_id + actual_value/
+    predicted_value/error/abs_error for regression. Returns None when the
+    field is absent/empty (older report, or the field failed to populate)."""
+    table = report.get("test_predictions_table")
+    if not table or not table.get("rows"):
+        return None
+    columns = table.get("columns") or list(table["rows"][0].keys())
+    return pd.DataFrame(table["rows"], columns=columns)
+
+
+def filter_incorrect_predictions(df: pd.DataFrame) -> pd.DataFrame:
+    """Classification filter: keep only rows the model got wrong. A no-op
+    (returns df unchanged) when there's no 'correct' column, e.g. a
+    regression predictions table."""
+    if "correct" not in df.columns:
+        return df
+    return df[~df["correct"].astype(bool)]
+
+
+def filter_large_error_predictions(df: pd.DataFrame, min_abs_error: float) -> pd.DataFrame:
+    """Regression filter: keep only rows whose absolute error is at least
+    min_abs_error. A no-op when there's no 'abs_error' column, e.g. a
+    classification predictions table."""
+    if "abs_error" not in df.columns:
+        return df
+    return df[df["abs_error"] >= min_abs_error]
+
+
+def search_predictions_df(df: pd.DataFrame, query: str) -> pd.DataFrame:
+    """Case-insensitive substring search over the row_id column. Returns
+    df unchanged for an empty/whitespace-only query or a missing row_id
+    column."""
+    if not query or not query.strip() or "row_id" not in df.columns:
+        return df
+    return df[df["row_id"].astype(str).str.contains(query.strip(), case=False, na=False, regex=False)]
+
+
+def paginate_df(df: pd.DataFrame, page: int, page_size: int) -> pd.DataFrame:
+    """1-indexed page slice of df. page is clamped into [1, n_pages] so an
+    out-of-range page (e.g. a stale widget value after a filter shrinks the
+    result set) degrades to the nearest valid page instead of raising or
+    returning empty."""
+    n_rows = len(df)
+    if n_rows == 0:
+        return df
+    n_pages = max(1, -(-n_rows // page_size))  # ceil division
+    page = min(max(1, page), n_pages)
+    start = (page - 1) * page_size
+    return df.iloc[start:start + page_size]
+
+
 # ---------------------------------------------------------------------------
 # Visualization Gallery (P5)
 # ---------------------------------------------------------------------------

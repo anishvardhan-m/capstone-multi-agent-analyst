@@ -179,6 +179,215 @@ def test_build_test_predictions_downsamples_above_the_cap():
 
 
 # ---------------------------------------------------------------------------
+# test_predictions_table (per-record predictions, dashboard-facing,
+# generic across task types)
+# ---------------------------------------------------------------------------
+
+def test_build_test_predictions_table_classification_shape_and_values():
+    from src.agents.ml_agent import _build_test_predictions_table
+
+    row_ids = np.array(["r0", "r1", "r2", "r3"])
+    y_true = np.array([0, 1, 1, 0])
+    y_pred = np.array([0, 1, 0, 0])
+    confidence = np.array([0.9, 0.8, 0.55, 0.99])
+
+    table = _build_test_predictions_table(
+        row_ids, y_true, y_pred, "binary_classification", confidence=confidence,
+        id_col="order_id",
+    )
+
+    assert table["task_type"] == "binary_classification"
+    assert table["id_col"] == "order_id"
+    assert table["columns"] == [
+        "row_id", "actual_label", "predicted_label", "confidence", "correct",
+    ]
+    assert table["total_test_rows"] == 4
+    assert table["sampled"] is False
+    assert table["sample_size"] == 4
+    assert len(table["rows"]) == 4
+
+    row2 = next(r for r in table["rows"] if r["row_id"] == "r2")
+    assert row2["actual_label"] == 1
+    assert row2["predicted_label"] == 0
+    assert row2["confidence"] == pytest.approx(0.55)
+    assert row2["correct"] is False
+
+    row0 = next(r for r in table["rows"] if r["row_id"] == "r0")
+    assert row0["correct"] is True
+
+
+def test_build_test_predictions_table_regression_shape_and_values():
+    from src.agents.ml_agent import _build_test_predictions_table
+
+    row_ids = np.arange(3)
+    y_true = np.array([10.0, 20.0, 30.0])
+    y_pred = np.array([12.0, 19.0, 25.0])
+
+    table = _build_test_predictions_table(row_ids, y_true, y_pred, "regression", id_col=None)
+
+    assert table["id_col"] is None
+    assert table["columns"] == [
+        "row_id", "actual_value", "predicted_value", "error", "abs_error",
+    ]
+    row0 = table["rows"][0]
+    assert row0["row_id"] == 0
+    assert row0["actual_value"] == pytest.approx(10.0)
+    assert row0["predicted_value"] == pytest.approx(12.0)
+    assert row0["error"] == pytest.approx(2.0)
+    assert row0["abs_error"] == pytest.approx(2.0)
+
+
+def test_build_test_predictions_table_no_confidence_when_unavailable():
+    from src.agents.ml_agent import _build_test_predictions_table
+
+    row_ids = np.arange(2)
+    y_true = np.array([0, 1])
+    y_pred = np.array([0, 1])
+
+    table = _build_test_predictions_table(row_ids, y_true, y_pred, "binary_classification")
+
+    assert all(r["confidence"] is None for r in table["rows"])
+
+
+def test_build_test_predictions_table_under_cap_includes_every_row():
+    from src.agents.ml_agent import _build_test_predictions_table
+
+    n = 50
+    row_ids = np.arange(n)
+    y_true = np.zeros(n, dtype=float)
+    y_pred = np.ones(n, dtype=float)
+
+    table = _build_test_predictions_table(
+        row_ids, y_true, y_pred, "regression", max_rows=5000,
+    )
+
+    assert table["sampled"] is False
+    assert table["total_test_rows"] == n
+    assert table["sample_size"] == n
+    assert len(table["rows"]) == n
+    assert "All 50 held-out test rows" in table["note"]
+
+
+def test_build_test_predictions_table_caps_and_samples_with_fixed_seed():
+    from src.agents.ml_agent import _build_test_predictions_table
+
+    n = 200
+    row_ids = np.arange(n)
+    y_true = np.arange(n, dtype=float)
+    y_pred = np.arange(n, dtype=float) + 1.0
+
+    table_a = _build_test_predictions_table(
+        row_ids, y_true, y_pred, "regression", max_rows=20, random_state=7,
+    )
+    table_b = _build_test_predictions_table(
+        row_ids, y_true, y_pred, "regression", max_rows=20, random_state=7,
+    )
+
+    assert table_a["sampled"] is True
+    assert table_a["total_test_rows"] == n
+    assert table_a["sample_size"] == 20
+    assert len(table_a["rows"]) == 20
+    assert "Sampled 20 of 200" in table_a["note"]
+
+    # Same seed -> identical sample (deterministic, reproducible report).
+    ids_a = [r["row_id"] for r in table_a["rows"]]
+    ids_b = [r["row_id"] for r in table_b["rows"]]
+    assert ids_a == ids_b
+
+    # Every sampled row is still a genuine, correctly-matched observation.
+    for row in table_a["rows"]:
+        assert row["predicted_value"] == pytest.approx(row["actual_value"] + 1.0)
+
+
+def test_agent_e2e_classification_populates_test_predictions_table(classification_csv):
+    agent = MLAgent()
+    agent.run(classification_csv, target_col="label", id_col="row_id")
+
+    table = agent.report_.test_predictions_table
+    assert table is not None
+    assert table["task_type"] == "binary_classification"
+    assert table["id_col"] == "row_id"
+    n_test = int(round(400 * agent.test_size))
+    assert table["total_test_rows"] == n_test
+    assert len(table["rows"]) == n_test  # well under the 5000 cap
+
+    row = table["rows"][0]
+    assert row["row_id"].startswith("id_")
+    assert row["actual_label"] in (0, 1)
+    assert row["predicted_label"] in (0, 1)
+    assert 0.0 <= row["confidence"] <= 1.0
+    assert isinstance(row["correct"], bool)
+    assert row["correct"] == (row["actual_label"] == row["predicted_label"])
+
+
+def test_agent_e2e_regression_populates_test_predictions_table(regression_csv):
+    agent = MLAgent()
+    agent.run(regression_csv, target_col="price")  # no id_col supplied
+
+    table = agent.report_.test_predictions_table
+    assert table is not None
+    assert table["task_type"] == "regression"
+    assert table["id_col"] is None  # falls back to positional index
+
+    row_ids = [r["row_id"] for r in table["rows"]]
+    assert all(isinstance(rid, int) for rid in row_ids)
+    assert len(set(row_ids)) == len(row_ids)  # positional indices are unique
+
+    row = table["rows"][0]
+    assert "actual_value" in row and "predicted_value" in row
+    assert row["abs_error"] == pytest.approx(abs(row["error"]))
+
+
+def test_agent_e2e_test_predictions_table_id_col_missing_falls_back_to_index(classification_csv):
+    """id_col requested but not actually in the data -- must still populate
+    the table via positional index, not crash or silently omit the field."""
+    agent = MLAgent()
+    agent.run(classification_csv, target_col="label", id_col="not_a_real_column")
+
+    table = agent.report_.test_predictions_table
+    assert table is not None
+    assert table["id_col"] is None
+    row_ids = [r["row_id"] for r in table["rows"]]
+    assert all(isinstance(rid, int) for rid in row_ids)
+
+
+def test_agent_e2e_test_predictions_table_generic_synthetic_dataset_no_id_col(tmp_path):
+    """Genericity check: a synthetic dataset with entirely different column
+    names, a multiclass target, and no id_col at all -- must populate
+    test_predictions_table with the same mechanism, proving this isn't
+    Olist-specific in any way."""
+    from sklearn.datasets import make_classification
+
+    X, y = make_classification(
+        n_samples=300, n_features=6, n_informative=4, n_classes=3,
+        n_clusters_per_class=1, random_state=11,
+    )
+    df = pd.DataFrame(X, columns=[f"sensor_reading_{i}" for i in range(6)])
+    df["equipment_failure_mode"] = y
+    path = tmp_path / "synthetic_equipment.csv"
+    df.to_csv(path, index=False)
+
+    agent = MLAgent()
+    success, _ = agent.run(str(path), target_col="equipment_failure_mode")
+    assert success is True
+
+    report = agent.report_
+    assert report.task_type == "multiclass_classification"
+    table = report.test_predictions_table
+    assert table is not None
+    assert table["id_col"] is None
+    assert table["columns"] == [
+        "row_id", "actual_label", "predicted_label", "confidence", "correct",
+    ]
+    row_ids = [r["row_id"] for r in table["rows"]]
+    assert all(isinstance(rid, int) for rid in row_ids)
+    assert len(set(row_ids)) == len(row_ids)
+    for row in table["rows"]:
+        assert row["actual_label"] in (0, 1, 2)
+        assert row["predicted_label"] in (0, 1, 2)
+
+
+# ---------------------------------------------------------------------------
 # Stratified split preserves class balance (classification)
 # ---------------------------------------------------------------------------
 
