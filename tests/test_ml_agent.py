@@ -387,6 +387,83 @@ def test_agent_e2e_test_predictions_table_generic_synthetic_dataset_no_id_col(tm
         assert row["predicted_label"] in (0, 1, 2)
 
 
+def test_agent_e2e_test_predictions_table_generic_synthetic_churn_dataset(tmp_path):
+    """Genericity check #2: a synthetic customer-churn dataset -- yet another
+    domain, its own column names, and a never-before-used id_col
+    ('subscriber_ref') -- with realistic class imbalance (~10% churn, in the
+    same ballpark as this project's real is_late_delivery rate). Confirms
+    test_predictions_table isn't tied to any specific dataset's schema and
+    correctly threads a caller-supplied id_col through to row_id."""
+    rng = np.random.default_rng(2024)
+    n = 600
+
+    tenure_months = rng.integers(1, 73, n)
+    monthly_charges = np.round(rng.uniform(20, 120, n), 2)
+    support_tickets = rng.poisson(1.2, n)
+    payment_delay_days = rng.integers(0, 30, n)
+    contract_type_code = rng.integers(0, 3, n)
+    satisfaction_score = np.clip(rng.normal(6.5, 2.0, n), 0, 10)
+
+    logit = (
+        -0.9
+        - 0.04 * tenure_months
+        + 0.015 * monthly_charges
+        + 0.55 * support_tickets
+        + 0.03 * payment_delay_days
+        - 0.9 * contract_type_code
+        - 0.35 * satisfaction_score
+        + rng.normal(0, 1.0, n)
+    )
+    prob_churn = 1 / (1 + np.exp(-logit))
+    churned = (rng.uniform(0, 1, n) < prob_churn).astype(int)
+
+    df = pd.DataFrame({
+        "subscriber_ref": [f"CUST-{i:06d}" for i in range(n)],
+        "tenure_months": tenure_months,
+        "monthly_charges": monthly_charges,
+        "support_tickets": support_tickets,
+        "payment_delay_days": payment_delay_days,
+        "contract_type_code": contract_type_code,
+        "satisfaction_score": np.round(satisfaction_score, 2),
+        "churned": churned,
+    })
+    churn_rate = df["churned"].mean()
+    assert 0.03 < churn_rate < 0.30, (
+        f"test fixture drifted to an unrealistic churn rate ({churn_rate:.3f}); "
+        "adjust the logit intercept above"
+    )
+    path = tmp_path / "synthetic_customer_churn.csv"
+    df.to_csv(path, index=False)
+
+    agent = MLAgent()
+    success, _ = agent.run(str(path), target_col="churned", id_col="subscriber_ref")
+    assert success is True
+
+    report = agent.report_
+    assert report.task_type == "binary_classification"
+    table = report.test_predictions_table
+    assert table is not None
+    assert table["id_col"] == "subscriber_ref"
+    assert table["columns"] == [
+        "row_id", "actual_label", "predicted_label", "confidence", "correct",
+    ]
+
+    n_test = int(round(n * agent.test_size))
+    assert table["total_test_rows"] == n_test
+    assert table["sampled"] is False  # well under the 5,000-row cap
+    assert len(table["rows"]) == n_test
+
+    row_ids = [r["row_id"] for r in table["rows"]]
+    assert all(isinstance(rid, str) and rid.startswith("CUST-") for rid in row_ids)
+    assert len(set(row_ids)) == len(row_ids)  # every test row's id is unique
+
+    for row in table["rows"]:
+        assert row["actual_label"] in (0, 1)
+        assert row["predicted_label"] in (0, 1)
+        assert 0.0 <= row["confidence"] <= 1.0
+        assert row["correct"] == (row["actual_label"] == row["predicted_label"])
+
+
 # ---------------------------------------------------------------------------
 # Stratified split preserves class balance (classification)
 # ---------------------------------------------------------------------------
