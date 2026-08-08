@@ -194,7 +194,7 @@ before treating the demo model's numbers as production-ready.
 
 ## Testing
 
-384 tests across unit and integration suites, covering every agent plus
+405 tests across unit and integration suites, covering every agent plus
 the orchestrator's failure-recovery paths.
 
 ```bash
