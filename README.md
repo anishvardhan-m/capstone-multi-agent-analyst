@@ -1,5 +1,11 @@
 # Multi-Agent AI Data Analyst
 
+<p align="center">
+  <a href="docs/demo/demo.mp4"><img src="docs/demo/demo.gif" alt="Demo: upload a CSV, seven agents run the pipeline, one self-recovers, and the insights report is honest about the baseline" width="100%" /></a>
+  <br />
+  <sub>Click the animation for the full video with sound.</sub>
+</p>
+
 A multi-agent system that takes any tabular dataset (CSV) and autonomously
 cleans it, explores it, engineers features, trains and evaluates ML models
 (classification or regression), generates visualizations, writes business

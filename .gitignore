@@ -52,3 +52,6 @@ workspace/*/*.md
 # Logs
 *.log
 RAW_DATASETS/
+
+# /brag launch video output
+brag-output*/
